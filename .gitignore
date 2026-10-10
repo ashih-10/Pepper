@@ -41,3 +41,17 @@ example
 # generated native folders
 /ios
 /android
+
+# secrets: never commit real keys
+.env
+supabase/functions/.env
+supabase/.env
+supabase/.temp/
+supabase/.branches/
+
+# generated native projects (Expo CNG)
+/ios
+/android
+
+# local test logs
+fake-claude-requests.jsonl

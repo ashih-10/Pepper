@@ -1,56 +1,72 @@
-# Welcome to your Expo app 👋
+# Pepper Planner 🌶️🥛
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+An AI-prioritized, shared academic planner for students (Congressional App Challenge 2026).
 
-## Get started
+Students log tests, quizzes, projects and homework. Every task gets a **pepper level**
+(🫑 Bell → 🌶️ Jalapeño → 🌶️ Serrano → 🔥 Habanero → 👻 Ghost Pepper) that heats up as the
+deadline gets close, weighted by how much the task counts and how crowded the student's week is.
+Finishing a task pours a glass of milk over it. Students create their own groups so one person
+logs a shared deadline and it lands in everyone's list, ranked against each person's own workload.
 
-1. Install dependencies
+## Stack
 
-   ```bash
-   npm install
-   ```
+| Layer | Tool |
+|---|---|
+| App | Expo SDK 57 (React Native, Expo Router), runs in Expo Go, iOS, Android and web |
+| Backend | Supabase: Postgres + row-level security, Auth, Realtime |
+| AI | Claude API, called only from Supabase Edge Functions (the key never ships in the app) |
+| Alerts | `expo-notifications` local notifications, rescheduled every time tasks change |
 
-2. Start the app
+## Run it
 
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+Full step-by-step instructions are in the **Setup Guide PDF** (`docs/`). Short version:
 
 ```bash
-npm run reset-project
+npm install
+cp .env.example .env            # paste your Supabase URL + publishable key
+npx supabase link --project-ref <your-ref>
+npx supabase db push            # creates the tables + security rules
+npx supabase secrets set ANTHROPIC_API_KEY=<your key>
+npx supabase functions deploy extract-task
+npx supabase functions deploy plan-today
+npx expo start                  # scan the QR code with Expo Go
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## Where things live
 
-### Other setup steps
+```
+src/app/                 screens (Expo Router: every file is a route)
+  (tabs)/index.tsx       Today: day strip, stacked-urgency callout, AI game plan, task lists
+  (tabs)/calendar.tsx    month view with class-colored workload dots
+  (tabs)/groups.tsx      create / join groups
+  (tabs)/me.tsx          profile, classes, quiet hours, demo tools
+  task/new.tsx           add a task by hand or by photo (AI fills it, you confirm)
+  task/[id].tsx          task details: pepper level, why, check off, edit, delete
+  group/[id].tsx         invite code, shared tasks, members, activity feed
+src/lib/pepper.ts        THE PEPPER FORMULA (pure functions, fully unit-tested)
+src/lib/alert-plan.ts    which alerts fire when (cadence per pepper level, quiet hours)
+src/lib/recurrence.ts    recurring tasks
+src/state/planner.tsx    loads data, live sync, scoring, alert scheduling
+supabase/migrations/     database tables, triggers, RPCs, row-level security
+supabase/functions/      extract-task (Claude Haiku vision), plan-today (Claude Sonnet)
+tests/                   unit tests; tests/db = security + AI-function tests (need local Supabase)
+```
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+## Tests
 
-## Learn more
+```bash
+npm test                 # pepper formula, recurrence, alert planning (27 tests)
+npx supabase start       # local Supabase in Docker
+npm run test:db          # row-level security end-to-end (16 tests)
+npm run typecheck && npx expo lint
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+`tests/db/functions.test.ts` checks the AI functions against a fake Claude server
+(`tests/mocks/fake-claude.mjs`), so it runs without spending API credits.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## AI disclosure
 
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Built with help from Claude Code (an AI coding assistant). See the "How It Works" PDF in `docs/`
+for the full disclosure and which parts are AI-assisted. In the app itself, AI is used for two
+things only: reading assignment photos (Claude Haiku) and writing the daily game plan
+(Claude Sonnet). Pepper levels come from a deterministic formula, not from AI.
