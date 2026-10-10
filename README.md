@@ -32,6 +32,14 @@ npx supabase functions deploy plan-today
 npx expo start                  # scan the QR code with Expo Go
 ```
 
+### Web version on Vercel
+
+`vercel.json` is already set up (single-page build, every path served by `index.html`).
+On vercel.com: **Add New → Project → import this repo**, add the two environment variables
+`EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, then **Deploy**.
+They are baked into the build, so redeploy after changing them. Pepper alerts are phone-only;
+everything else (groups, live sync, AI photo reading, game plan) works on the web.
+
 ## Where things live
 
 ```
