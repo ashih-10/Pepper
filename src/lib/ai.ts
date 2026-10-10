@@ -1,13 +1,16 @@
 /**
  * Calls to the AI edge functions. The Claude API key lives only on the
  * server; the app sends the student's login token and gets results back.
+ * In the on-device demo (no server) both are simulated locally: nothing,
+ * not even the photo, leaves the device.
  */
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 
 import { dayKey, timeZoneName, weekdayLong } from './dates';
-import { supabase } from './supabase';
+import { sampleExtract, samplePlan } from './local/ai';
+import { isDemo, supabase } from './supabase';
 import type { TaskType, WeightTier } from './types';
 
 export type UnclearField = 'title' | 'class' | 'due_date' | 'due_time' | 'task_type' | 'weight_pct';
@@ -74,7 +77,9 @@ export async function pickAssignmentImage(source: 'camera' | 'library'): Promise
   return saved.base64.replace(/^data:image\/\w+;base64,/, '');
 }
 
+/** Read an assignment photo into draft tasks (simulated with sample tasks in the demo). */
 export function extractTasksFromImage(imageBase64: string, classNames: string[], now = new Date()) {
+  if (isDemo) return sampleExtract(classNames, now);
   return invoke<ExtractResult>('extract-task', {
     image: imageBase64,
     media_type: 'image/jpeg',
@@ -94,6 +99,8 @@ export interface PlanTaskInput {
   pepper: string;
 }
 
+/** Today's AI game plan (built on the device from the pepper order in the demo). */
 export function fetchGamePlan(tasks: PlanTaskInput[], nowLabel: string) {
+  if (isDemo) return samplePlan(tasks, nowLabel);
   return invoke<GamePlan>('plan-today', { now: nowLabel, timezone: timeZoneName(), tasks });
 }

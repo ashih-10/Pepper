@@ -3,11 +3,12 @@ import { useState } from 'react';
 import { StyleSheet, Switch, Text, View } from 'react-native';
 
 import { ClassEditor } from '@/components/class-editor';
+import { DEMO_PLACE, DemoBanner } from '@/components/demo-banner';
 import { Button, Card, Chip, ChipRow, confirm, Field, H1, H2, Muted, Screen, tell } from '@/components/ui';
 import * as api from '@/lib/api';
 import { loadDemoData, removeDemoData } from '@/lib/demo';
 import { notificationsSupported, notifyNow } from '@/lib/notifications';
-import { errorMessage } from '@/lib/supabase';
+import { errorMessage, isDemo } from '@/lib/supabase';
 import { C, S } from '@/lib/theme';
 import { useAuth } from '@/state/auth';
 import { usePlanner } from '@/state/planner';
@@ -15,7 +16,7 @@ import { usePlanner } from '@/state/planner';
 const hourLabel = (h: number) => `${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? 'AM' : 'PM'}`;
 
 export default function Me() {
-  const { userId, profile, refreshProfile, signOut, session } = useAuth();
+  const { userId, profile, refreshProfile, signOut, email } = useAuth();
   const { classes, refresh, demoMode, setDemoMode } = usePlanner();
   const [name, setName] = useState(profile?.display_name ?? '');
   const [goals, setGoals] = useState(profile?.goals ?? '');
@@ -58,7 +59,7 @@ export default function Me() {
   return (
     <Screen>
       <H1>Me</H1>
-      <Muted>{session?.user.email}</Muted>
+      {isDemo ? <DemoBanner /> : <Muted>{email}</Muted>}
 
       <Card>
         <Field label="Name" value={name} onChangeText={setName} maxLength={60} />
@@ -145,17 +146,40 @@ export default function Me() {
           Pepper levels come from a formula on your phone (weight × time left, adjusted for your workload). AI is used
           for reading assignment photos (Claude Haiku) and writing your game plan (Claude Sonnet).
         </Muted>
+        {isDemo && (
+          <Muted>
+            In this demo both are simulated on {DEMO_PLACE}: no photo or task is sent anywhere, and the classmate in the
+            sample group is pretend.
+          </Muted>
+        )}
         <Muted>For students 13 and older.</Muted>
       </Card>
 
-      <Button
-        title="Sign out"
-        kind="secondary"
-        icon="log-out-outline"
-        onPress={async () => {
-          if (await confirm('Sign out?', 'Scheduled alerts on this phone stay until you sign back in.', 'Sign out')) signOut();
-        }}
-      />
+      {isDemo ? (
+        <Button
+          title="Reset demo"
+          kind="secondary"
+          icon="trash-outline"
+          onPress={async () => {
+            const ok = await confirm(
+              'Reset demo?',
+              `Erase everything this demo stored in ${DEMO_PLACE}? You can start a fresh demo afterwards.`,
+              'Erase',
+              true,
+            );
+            if (ok) signOut();
+          }}
+        />
+      ) : (
+        <Button
+          title="Sign out"
+          kind="secondary"
+          icon="log-out-outline"
+          onPress={async () => {
+            if (await confirm('Sign out?', 'Scheduled alerts on this phone stay until you sign back in.', 'Sign out')) signOut();
+          }}
+        />
+      )}
     </Screen>
   );
 }

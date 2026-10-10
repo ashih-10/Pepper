@@ -6,6 +6,7 @@ import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 
+import { DEMO_PLACE, DemoBanner } from '@/components/demo-banner';
 import { emptyDraft, TaskForm, type FormField, type TaskDraft } from '@/components/task-form';
 import { Banner, Button, Card, Muted, Screen, tell } from '@/components/ui';
 import { goBack } from '@/lib/nav';
@@ -91,6 +92,11 @@ export default function NewTask() {
 
   return (
     <Screen edges={['bottom']}>
+      {!current && (
+        <DemoBanner>
+          {`Demo mode: photo reading is simulated. Your photo stays in ${DEMO_PLACE} and you get sample tasks to review.`}
+        </DemoBanner>
+      )}
       {!current ? (
         <Card>
           <Text style={styles.scanTitle}>📸 Scan an assignment sheet</Text>

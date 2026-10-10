@@ -6,6 +6,7 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'r
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { DayStrip } from '@/components/calendar';
+import { DemoBanner } from '@/components/demo-banner';
 import { TaskCard } from '@/components/task-card';
 import { GamePlanCard, RescueOffers, StackedCallout, TimeWarp } from '@/components/today-widgets';
 import { Banner, Button, Empty, H2, Loading, Muted } from '@/components/ui';
@@ -60,6 +61,7 @@ export default function Today() {
             <Muted>{summary}</Muted>
           </View>
 
+          <DemoBanner />
           <TimeWarp />
           {error && <Banner tone="warn" icon="cloud-offline-outline">{error}</Banner>}
           <RescueOffers rescues={rescues} />

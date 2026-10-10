@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Text } from 'react-native';
 
+import { isDemo } from '@/lib/supabase';
 import { useAuth } from '@/state/auth';
 
-import { Button, H1, Muted, Screen } from './ui';
+import { Button, confirm, H1, Muted, Screen } from './ui';
 
 /** Shown when the profile couldn't load (offline or server error). Never onboarding. */
 export function LoadFailed() {
@@ -12,8 +13,12 @@ export function LoadFailed() {
   return (
     <Screen edges={['top', 'bottom']}>
       <Text style={{ fontSize: 48 }}>📡</Text>
-      <H1>Can&apos;t reach Pepper Planner</H1>
-      <Muted>Check your internet connection, then try again. Your tasks are safe.</Muted>
+      <H1>{isDemo ? 'The demo could not load' : 'Can\u2019t reach Pepper Planner'}</H1>
+      <Muted>
+        {isDemo
+          ? 'This browser may be blocking site storage. Try again, or reset the demo to start over.'
+          : 'Check your internet connection, then try again. Your tasks are safe.'}
+      </Muted>
       <Button
         title="Try again"
         icon="refresh"
@@ -24,7 +29,19 @@ export function LoadFailed() {
           setBusy(false);
         }}
       />
-      <Button title="Sign out" kind="ghost" onPress={signOut} />
+      {isDemo ? (
+        <Button
+          title="Reset demo"
+          kind="ghost"
+          onPress={async () => {
+            if (await confirm('Reset the demo?', 'This erases everything the demo stored in this browser.', 'Reset', true)) {
+              await signOut();
+            }
+          }}
+        />
+      ) : (
+        <Button title="Sign out" kind="ghost" onPress={signOut} />
+      )}
     </Screen>
   );
 }

@@ -51,7 +51,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "vitest run --exclude tests/db/**",
+    "test": "vitest run --exclude \"tests/db/**\"",
     "test:db": "bash scripts/test-db.sh",
     "typecheck": "tsc --noEmit"
   },

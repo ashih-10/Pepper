@@ -1,0 +1,96 @@
+# Builds the web app and publishes it to GitHub Pages: https://ashih-10.github.io/Pepper/
+# With no Supabase repo variables set, the site is the on-device demo (nothing leaves the browser).
+# Set EXPO_PUBLIC_SUPABASE_URL + EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY as repo *variables* (both are public by
+# design; row-level security protects the data) and re-run this workflow to publish the real app instead.
+#
+# Two jobs on separate runners: `build` runs npm install, checks and the export with a read-only token, so
+# no install script or build tool ever runs next to the write token; `publish` only pushes the built files.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npx expo lint
+
+      - name: Unit tests
+        # tests/db needs a local Supabase in Docker, so `npm test` leaves it out.
+        run: npm test
+
+      - name: Build web
+        env:
+          # Pages paths are case-sensitive and follow the repo name (Pepper -> /Pepper).
+          EXPO_PUBLIC_BASE_URL: /${{ github.event.repository.name }}
+          EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          npx expo export -p web
+          # Pages serves 404.html for unknown paths, so deep links (e.g. /Pepper/task/123) boot the app.
+          cp dist/index.html dist/404.html
+          # Without this, Jekyll drops _expo/ (the JS bundle) and assets/node_modules/ (icon fonts).
+          touch dist/.nojekyll
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: site
+          path: dist
+          include-hidden-files: true
+          retention-days: 1
+
+  publish:
+    # Only main goes live; a manual run on another branch still runs the checks and build.
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: site
+          path: site
+
+      - name: Push to gh-pages branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd site
+          git init -q -b gh-pages
+          git add -A
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "Deploy ${GITHUB_SHA}"
+          # gh-pages always holds exactly one commit: the current build.
+          git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages

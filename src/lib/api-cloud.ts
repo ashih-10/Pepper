@@ -209,7 +209,11 @@ export async function topUpMySeries(userId: string): Promise<number> {
   let added = 0;
   for (const series of rows) {
     if (series.rule.until && series.rule.until < today) continue;
-    added += await topUpSeries(series);
+    try {
+      added += await topUpSeries(series);
+    } catch {
+      // e.g. a series in a group you have since left: skip it, keep the rest going
+    }
   }
   return added;
 }

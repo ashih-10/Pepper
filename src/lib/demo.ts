@@ -4,8 +4,7 @@
  * Every demo task is tagged so it can be removed in one tap.
  */
 import { addDays, combine, dayKey } from './dates';
-import { addClass } from './api';
-import { supabase } from './supabase';
+import { addClass, bulkInsertTasks, deleteTaggedTasks, type TaskSeed } from './api';
 import { CLASS_COLORS } from './theme';
 import type { ClassRow, TaskType, WeightTier } from './types';
 
@@ -35,6 +34,7 @@ const DEMO_TASKS: DemoTask[] = [
   { title: 'Fill out field trip form', cls: 3, type: 'custom', label: 'Form', tier: 'low', inDays: 6, time: '15:00' },
 ];
 
+/** Add the sample classes (if missing) and a week of sample tasks; returns how many tasks were added. */
 export async function loadDemoData(existing: ClassRow[], now = new Date()): Promise<number> {
   const classes = [...existing];
   for (const name of DEMO_CLASSES) {
@@ -43,7 +43,7 @@ export async function loadDemoData(existing: ClassRow[], now = new Date()): Prom
     }
   }
   const byName = (i: number) => classes.find((c) => c.name.toLowerCase() === DEMO_CLASSES[i].toLowerCase())!;
-  const rows = DEMO_TASKS.map((t) => ({
+  const rows: TaskSeed[] = DEMO_TASKS.map((t) => ({
     title: t.title,
     task_type: t.type,
     custom_label: t.label ?? null,
@@ -55,12 +55,11 @@ export async function loadDemoData(existing: ClassRow[], now = new Date()): Prom
     // row is sent as NULL for that row instead of using the default.
     created_at: addDays(now, -(t.createdDaysAgo ?? 0)).toISOString(),
   }));
-  const { error } = await supabase.from('tasks').insert(rows);
-  if (error) throw error;
+  await bulkInsertTasks(rows);
   return rows.length;
 }
 
+/** Remove every task added by `loadDemoData` (matched by its tag). */
 export async function removeDemoData(userId: string): Promise<void> {
-  const { error } = await supabase.from('tasks').delete().eq('created_by', userId).eq('notes', DEMO_TAG);
-  if (error) throw error;
+  await deleteTaggedTasks(userId, DEMO_TAG);
 }

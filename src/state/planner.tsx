@@ -1,7 +1,7 @@
 /**
- * The planner's shared state: loads the student's data, keeps it live with
- * Supabase Realtime, scores every task with the pepper engine, and keeps the
- * phone's alert queue and recurring tasks topped up.
+ * The planner's shared state: loads the student's data, keeps it live through
+ * the group activity feed, scores every task with the pepper engine, and keeps
+ * the phone's alert queue and recurring tasks topped up.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
@@ -12,7 +12,6 @@ import { formatDue } from '@/lib/dates';
 import { notifyNow, schedulePepperAlerts } from '@/lib/notifications';
 import { scorePlate, type PepperResult } from '@/lib/pepper';
 import { getPref, setPref } from '@/lib/prefs';
-import { supabase } from '@/lib/supabase';
 import { NO_CLASS_COLOR } from '@/lib/theme';
 import type { ActivityRow, ClassRow, GroupMemberRow, GroupRow, PlannerTask, RescueRow } from '@/lib/types';
 
@@ -184,27 +183,23 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Live sync through the group activity feed: every shared-task and
-  // membership change writes an activity row, and those INSERT events are
-  // RLS-checked, so only members of that group receive them.
+  // membership change writes an activity row. On the server those INSERT
+  // events are RLS-checked, so only members of that group receive them.
   useEffect(() => {
     if (!userId) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const channel = supabase
-      .channel(`planner-${userId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'activity' }, (payload) => {
-        const row = payload.new as ActivityRow;
-        rememberActivity(userId, row.id);
-        if (row.actor_id !== userId && DEADLINE_KINDS.has(row.kind)) {
-          const group = dataRef.current.groups.find((g) => g.id === row.group_id);
-          notifyNow(`📅 ${group?.name ?? 'Group'} update`, describeDeadlineChange(row));
-        }
-        clearTimeout(timer);
-        timer = setTimeout(() => load(userId), 300);
-      })
-      .subscribe();
+    const unsubscribe = api.subscribeActivity(userId, (row) => {
+      rememberActivity(userId, row.id);
+      if (row.actor_id !== userId && DEADLINE_KINDS.has(row.kind)) {
+        const group = dataRef.current.groups.find((g) => g.id === row.group_id);
+        notifyNow(`📅 ${group?.name ?? 'Group'} update`, describeDeadlineChange(row));
+      }
+      clearTimeout(timer);
+      timer = setTimeout(() => load(userId), 300);
+    });
     return () => {
       clearTimeout(timer);
-      supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [userId, load]);
 

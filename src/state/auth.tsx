@@ -5,29 +5,66 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { AppState } from 'react-native';
 
 import { loadProfile } from '@/lib/api';
+import {
+  endLocalSession,
+  getLocalSession,
+  onLocalSessionChange,
+  startLocalSession,
+  type LocalSession,
+} from '@/lib/local/session';
+import { setPref } from '@/lib/prefs';
 import { isWeb } from '@/lib/storage';
-import { isConfigured, supabase } from '@/lib/supabase';
+import { isDemo, supabase } from '@/lib/supabase';
 import type { Profile } from '@/lib/types';
 
-WebBrowser.maybeCompleteAuthSession();
+if (!isDemo) {
+  try {
+    WebBrowser.maybeCompleteAuthSession();
+  } catch {
+    // site storage blocked: there is no pending sign-in to finish
+  }
+}
 
 interface AuthCtx {
   ready: boolean;
-  session: Session | null;
+  /** True once someone is signed in (or the on-device demo has started). */
+  signedIn: boolean;
+  /** The account's email; null in the on-device demo. */
+  email: string | null;
   userId: string | null;
   profile: Profile | null;
   /** True when the profile could not be loaded (offline, server error). */
   profileFailed: boolean;
   refreshProfile: () => Promise<void>;
   signInWithGoogle: () => Promise<void>;
+  /** Demo mode only: create the on-device student and sign in as them. */
+  startDemo: () => void;
+  /** Signs out; in demo mode this erases everything the demo stored on this device. */
   signOut: () => Promise<void>;
+}
+
+/** Who is signed in, whichever backend is in use. */
+interface Who {
+  userId: string;
+  email: string | null;
+}
+
+const fromCloud = (s: Session | null): Who | null => (s ? { userId: s.user.id, email: s.user.email ?? null } : null);
+const fromLocal = (s: LocalSession | null): Who | null => (s ? { userId: s.userId, email: null } : null);
+
+/** Where Google sends the browser back to; includes the sub-path on GitHub Pages (e.g. /Pepper/). */
+function webRedirect(): string {
+  const base = (process.env.EXPO_PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
+  return window.location.origin + (base ? `${base}/` : '');
 }
 
 const Ctx = createContext<AuthCtx | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [sessionChecked, setSessionChecked] = useState(false);
-  const [session, setSession] = useState<Session | null>(null);
+  // The demo session is read straight from this device's storage, so there is
+  // nothing to wait for; the cloud session is checked once on start.
+  const [sessionChecked, setSessionChecked] = useState(isDemo);
+  const [who, setWho] = useState<Who | null>(() => (isDemo ? fromLocal(getLocalSession()) : null));
   // The profile is stored with the user id it belongs to, so a stale profile
   // is never shown after switching accounts. `failed` keeps "couldn't load"
   // apart from "no profile yet", so a network blip never sends an onboarded
@@ -37,18 +74,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     profile: null,
     failed: false,
   });
-  const userId = session?.user.id ?? null;
+  const userId = who?.userId ?? null;
+  const email = who?.email ?? null;
   const profile = loaded.uid === userId ? loaded.profile : null;
   const profileFailed = loaded.uid === userId && loaded.failed;
-  const ready = !isConfigured || (sessionChecked && (!userId || loaded.uid === userId));
+  const ready = sessionChecked && (!userId || loaded.uid === userId);
 
   useEffect(() => {
-    if (!isConfigured) return;
+    if (isDemo) return onLocalSessionChange((s) => setWho(fromLocal(s)));
     supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+      setWho(fromCloud(data.session));
       setSessionChecked(true);
     });
-    const { data } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    const { data } = supabase.auth.onAuthStateChange((_event, s) => setWho(fromCloud(s)));
     return () => data.subscription.unsubscribe();
   }, []);
 
@@ -83,10 +121,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [profileFailed, refreshProfile]);
 
   const signInWithGoogle = useCallback(async () => {
+    if (isDemo) throw new Error('Google sign-in needs a server. This copy runs as an on-device demo.');
     if (isWeb) {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: window.location.origin },
+        options: { redirectTo: webRedirect() },
       });
       if (error) throw error;
       return;
@@ -107,14 +146,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (exchanged.error) throw exchanged.error;
   }, []);
 
-  const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-    setLoaded({ uid: null, profile: null, failed: false });
+  const startDemo = useCallback(() => {
+    if (!isDemo) return;
+    setWho(fromLocal(startLocalSession()));
   }, []);
 
+  const signOut = useCallback(async () => {
+    if (isDemo) {
+      endLocalSession();
+      // Also forget this device's small app settings for the demo student.
+      if (userId) setPref(`pp:lastActivity:${userId}`, null);
+      setPref('pp:demo', null);
+      setWho(null);
+    } else {
+      await supabase.auth.signOut();
+    }
+    setLoaded({ uid: null, profile: null, failed: false });
+  }, [userId]);
+
   const value = useMemo(
-    () => ({ ready, session, userId, profile, profileFailed, refreshProfile, signInWithGoogle, signOut }),
-    [ready, session, userId, profile, profileFailed, refreshProfile, signInWithGoogle, signOut],
+    () => ({
+      ready,
+      signedIn: userId !== null,
+      email,
+      userId,
+      profile,
+      profileFailed,
+      refreshProfile,
+      signInWithGoogle,
+      startDemo,
+      signOut,
+    }),
+    [ready, email, userId, profile, profileFailed, refreshProfile, signInWithGoogle, startDemo, signOut],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

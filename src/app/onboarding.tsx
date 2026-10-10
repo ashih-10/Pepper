@@ -6,8 +6,10 @@ import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { ClassEditor } from '@/components/class-editor';
+import { DemoBanner } from '@/components/demo-banner';
 import { Button, Chip, ChipRow, Field, H1, Muted, Screen, tell } from '@/components/ui';
 import * as api from '@/lib/api';
+import { CLASSMATE_ID, CLASSMATE_NAME, DEMO_GROUP_CODE } from '@/lib/local/constants';
 import { setupNotifications } from '@/lib/notifications';
 import { errorMessage } from '@/lib/supabase';
 import { C, S } from '@/lib/theme';
@@ -28,7 +30,7 @@ const STEPS = ['About you', 'Your classes', 'Your goals', 'Join a group'];
 
 export default function Onboarding() {
   const { userId, profile, refreshProfile } = useAuth();
-  const { classes, refresh } = usePlanner();
+  const { classes, groups, refresh } = usePlanner();
   const [step, setStep] = useState(0);
   const [name, setName] = useState(profile?.display_name ?? '');
   const [level, setLevel] = useState<EducationLevel | null>(profile?.education_level ?? 'high');
@@ -154,6 +156,9 @@ export default function Onboarding() {
             Got a code from a friend? Join their group and shared deadlines show up in your list automatically. You can
             also do this later.
           </Muted>
+          {!groups.some((g) => g.owner_id === CLASSMATE_ID) && (
+            <DemoBanner>{`Try it: join ${CLASSMATE_NAME}'s group with code ${DEMO_GROUP_CODE}.`}</DemoBanner>
+          )}
           <Field
             label="Group code"
             value={code}

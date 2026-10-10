@@ -4,8 +4,10 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { DemoBanner } from '@/components/demo-banner';
 import { Button, Card, Chip, ChipRow, Empty, Field, H1, H2, Muted, Screen, tell } from '@/components/ui';
 import * as api from '@/lib/api';
+import { CLASSMATE_ID, CLASSMATE_NAME, DEMO_GROUP_CODE } from '@/lib/local/constants';
 import { errorMessage } from '@/lib/supabase';
 import { C, R, S } from '@/lib/theme';
 import { usePlanner } from '@/state/planner';
@@ -54,6 +56,10 @@ export default function Groups() {
         Make a group for a class, project team or study group. Anyone in it can add a shared deadline, and it shows up
         in everyone&apos;s list, ranked against their own workload.
       </Muted>
+
+      {!groups.some((g) => g.owner_id === CLASSMATE_ID) && (
+        <DemoBanner>{`Try it: join ${CLASSMATE_NAME}'s group with code ${DEMO_GROUP_CODE}.`}</DemoBanner>
+      )}
 
       {groups.length === 0 ? (
         <Empty emoji="👥" title="No groups yet" body="Create one and send the code to a classmate, or join theirs." />

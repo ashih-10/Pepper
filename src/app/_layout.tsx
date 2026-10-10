@@ -5,9 +5,7 @@ import { useEffect } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { LoadFailed } from '@/components/load-failed';
-import { SetupNeeded } from '@/components/setup-needed';
 import { Loading } from '@/components/ui';
-import { isConfigured } from '@/lib/supabase';
 import { C } from '@/lib/theme';
 import { AuthProvider, useAuth } from '@/state/auth';
 import { PlannerProvider } from '@/state/planner';
@@ -30,16 +28,16 @@ export default function RootLayout() {
 }
 
 function Gate() {
-  const { ready, session, profile, profileFailed } = useAuth();
+  const { ready, signedIn, profile, profileFailed } = useAuth();
   useEffect(() => {
-    if (ready || !isConfigured) SplashScreen.hideAsync().catch(() => {});
+    if (ready) SplashScreen.hideAsync().catch(() => {});
   }, [ready]);
 
-  if (!isConfigured) return <SetupNeeded />;
+  // Without a server configured the app runs as an on-device demo; the same
+  // screens work either way.
   if (!ready) return <Loading />;
-  if (session && profileFailed) return <LoadFailed />;
+  if (signedIn && profileFailed) return <LoadFailed />;
 
-  const signedIn = !!session;
   const onboarded = !!profile?.onboarded;
   const header = {
     headerShown: true,
