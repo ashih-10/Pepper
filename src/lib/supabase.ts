@@ -9,6 +9,12 @@ const key = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? '';
 /** False until the student fills in .env (see the setup guide). */
 export const isConfigured = url.startsWith('http') && key.length > 10;
 
+/**
+ * Without a Supabase project the app runs as an on-device demo: every read
+ * and write goes to this browser's storage and nothing is sent anywhere.
+ */
+export const isDemo = !isConfigured;
+
 export const supabase = createClient(isConfigured ? url : 'http://localhost', isConfigured ? key : 'missing', {
   auth: {
     storage: typeof localStorage === 'undefined' ? undefined : localStorage,
