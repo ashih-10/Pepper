@@ -6,7 +6,7 @@
 import { useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { addDays, combine, dayKey, formatDate, formatDue, formatTime, fromDayKey } from '@/lib/dates';
+import { addDays, combine, dayKey, formatDate, formatDue, formatTime, fromDayKey, timeKey } from '@/lib/dates';
 import { PEPPERS, scorePlate } from '@/lib/pepper';
 import { C, R, S } from '@/lib/theme';
 import type { RecurrenceFreq, TaskType, WeightTier } from '@/lib/types';
@@ -81,7 +81,17 @@ export function validate(d: TaskDraft): string | null {
     const n = Number(d.weight);
     if (!Number.isFinite(n) || n <= 0 || n > 100) return 'Grade weight must be between 1 and 100.';
   }
+  if (d.repeat !== 'none' && d.until && d.day && d.until < d.day) {
+    return 'The repeat end date is before the due date. Pick when it should stop again.';
+  }
   return null;
+}
+
+/** Accept "7,5" or "7.5"; keep digits and a single decimal point. */
+export function cleanWeight(v: string): string {
+  const s = v.replace(/,/g, '.').replace(/[^0-9.]/g, '');
+  const dot = s.indexOf('.');
+  return dot === -1 ? s : s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '');
 }
 
 export function TaskForm({
@@ -90,6 +100,8 @@ export function TaskForm({
   question,
   allowRepeat = true,
   allowGroupChange = true,
+  timeChosen = false,
+  editingTaskId,
   submitLabel,
   onSubmit,
   secondary,
@@ -99,6 +111,10 @@ export function TaskForm({
   question?: string | null;
   allowRepeat?: boolean;
   allowGroupChange?: boolean;
+  /** The due time was set on purpose (saved task, or read off the photo): changing type won't move it. */
+  timeChosen?: boolean;
+  /** When editing, the task's own id: it is left out of its own crowding in the preview. */
+  editingTaskId?: string;
   submitLabel: string;
   onSubmit: (d: TaskDraft) => Promise<void>;
   secondary?: React.ReactNode;
@@ -110,6 +126,9 @@ export function TaskForm({
   const [month, setMonth] = useState(() => (initial.day ? fromDayKey(initial.day) : new Date(now)));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [timeTouched, setTimeTouched] = useState(timeChosen);
+  // Which "until" preset is picked (days after the due date), so it follows the date.
+  const [untilDays, setUntilDays] = useState<number | null>(null);
 
   // Editing a field counts as checking it.
   function set<K extends keyof TaskDraft>(key: K, value: TaskDraft[K], field?: FormField) {
@@ -126,7 +145,7 @@ export function TaskForm({
       ...cur,
       task_type: t,
       // keep the time if the student chose one; otherwise use the type's default
-      time: cur.time === DEFAULT_TIME[cur.task_type] ? DEFAULT_TIME[t] : cur.time,
+      time: timeTouched ? cur.time : DEFAULT_TIME[t],
     }));
     if (flags.has('task_type')) {
       const next = new Set(flags);
@@ -135,23 +154,59 @@ export function TaskForm({
     }
   }
 
-  // Live preview of where this task will land on the pepper scale.
+  function setDay(day: string) {
+    setD((cur) => ({
+      ...cur,
+      day,
+      until: untilDays != null ? dayKey(addDays(fromDayKey(day), untilDays)) : cur.until,
+    }));
+    if (flags.has('due_date')) {
+      const next = new Set(flags);
+      next.delete('due_date');
+      setFlags(next);
+    }
+  }
+
+  function setTime(time: string) {
+    setTimeTouched(true);
+    set('time', time, 'due_time');
+  }
+
+  /** ±15 min that carries the date over midnight instead of wrapping. */
+  function nudge(minutes: number) {
+    setTimeTouched(true);
+    if (!d.day) return set('time', shiftTime(d.time, minutes), 'due_time');
+    const moved = new Date(combine(d.day, d.time).getTime() + minutes * 60_000);
+    setD((cur) => ({ ...cur, day: dayKey(moved), time: timeKey(moved) }));
+    if (flags.has('due_time')) {
+      const next = new Set(flags);
+      next.delete('due_time');
+      setFlags(next);
+    }
+  }
+
+  // Live preview of where this task will land on the pepper scale. When
+  // editing, the task itself is left out of the plate (it can't crowd itself)
+  // and keeps its real creation date, so the preview matches its badge.
   const preview = useMemo(() => {
     if (!d.day) return null;
     const due = combine(d.day, d.time);
     const weight = Number(d.weight);
+    const self = editingTaskId ? tasks.find((t) => t.id === editingTaskId) : undefined;
     const draft = {
       id: '__draft__',
       task_type: d.task_type,
       custom_tier: d.task_type === 'custom' ? d.custom_tier : null,
       weight_pct: Number.isFinite(weight) && weight > 0 ? weight : null,
       due_at: due.toISOString(),
-      created_at: now.toISOString(),
+      created_at: self?.created_at ?? now.toISOString(),
       completed: false,
     };
-    const plate = tasks.map((t) => ({ ...t, completed: t.completed_at !== null }));
+    const plate = tasks
+      .filter((t) => t.id !== editingTaskId)
+      .map((t) => ({ ...t, completed: t.completed_at !== null }));
     return scorePlate([...plate, draft], now).get('__draft__')!;
-  }, [d, tasks, now]);
+  }, [d, tasks, now, editingTaskId]);
 
   const groupClass = d.group_id ? classById(myMembership(d.group_id)?.class_id ?? null) : undefined;
 
@@ -231,7 +286,7 @@ export function TaskForm({
               label={q.label}
               selected={d.day === q.day}
               onPress={() => {
-                set('day', q.day, 'due_date');
+                setDay(q.day);
                 setPickDate(false);
               }}
             />
@@ -244,7 +299,7 @@ export function TaskForm({
             onMonth={setMonth}
             selected={d.day ? fromDayKey(d.day) : null}
             onSelect={(day) => {
-              set('day', dayKey(day), 'due_date');
+              setDay(dayKey(day));
               setPickDate(false);
             }}
             today={now}
@@ -252,10 +307,10 @@ export function TaskForm({
         )}
         <ChipRow>
           {TIMES.map((t) => (
-            <Chip key={t} label={formatTime(combine(dayKey(now), t))} selected={d.time === t} onPress={() => set('time', t, 'due_time')} />
+            <Chip key={t} label={formatTime(combine(dayKey(now), t))} selected={d.time === t} onPress={() => setTime(t)} />
           ))}
-          <Chip label="−15 min" onPress={() => set('time', shiftTime(d.time, -15), 'due_time')} />
-          <Chip label="+15 min" onPress={() => set('time', shiftTime(d.time, 15), 'due_time')} />
+          <Chip label="−15 min" onPress={() => nudge(-15)} />
+          <Chip label="+15 min" onPress={() => nudge(15)} />
         </ChipRow>
       </View>
 
@@ -292,7 +347,7 @@ export function TaskForm({
         label="Grade weight % (optional)"
         flagged={flags.has('weight_pct')}
         value={d.weight}
-        onChangeText={(v) => set('weight', v.replace(/[^0-9.]/g, ''), 'weight_pct')}
+        onChangeText={(v) => set('weight', cleanWeight(v), 'weight_pct')}
         keyboardType="decimal-pad"
         placeholder="e.g. 15"
         hint="Leave blank to use the default for this type."
@@ -313,15 +368,30 @@ export function TaskForm({
             ))}
           </ChipRow>
           {d.repeat !== 'none' && (
-            <ChipRow>
-              <Chip label="Until I stop it" selected={!d.until} onPress={() => set('until', null)} />
-              {[14, 30, 90].map((n) => {
-                const day = dayKey(addDays(d.day ? fromDayKey(d.day) : now, n));
-                return (
-                  <Chip key={n} label={n === 14 ? '2 weeks' : n === 30 ? '1 month' : '3 months'} selected={d.until === day} onPress={() => set('until', day)} />
-                );
-              })}
-            </ChipRow>
+            <>
+              <ChipRow>
+                <Chip
+                  label="Until I stop it"
+                  selected={!d.until}
+                  onPress={() => {
+                    setUntilDays(null);
+                    set('until', null);
+                  }}
+                />
+                {[14, 30, 90].map((n) => (
+                  <Chip
+                    key={n}
+                    label={n === 14 ? '2 weeks' : n === 30 ? '1 month' : '3 months'}
+                    selected={untilDays === n && !!d.until}
+                    onPress={() => {
+                      setUntilDays(n);
+                      set('until', dayKey(addDays(d.day ? fromDayKey(d.day) : now, n)));
+                    }}
+                  />
+                ))}
+              </ChipRow>
+              <Muted>You can stop a repeating task anytime from its task page.</Muted>
+            </>
           )}
         </View>
       )}

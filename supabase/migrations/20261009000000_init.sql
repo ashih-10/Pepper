@@ -56,6 +56,27 @@ create table public.group_members (
   primary key (group_id, user_id)
 );
 
+-- A recurring series: the template and rule live here, so deleting or editing
+-- one generated task never shifts the series or brings a deleted task back.
+-- Only the creator's device generates instances (see tasks_check_series).
+create table public.task_series (
+  id uuid primary key default gen_random_uuid(),
+  created_by uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  group_id uuid references public.groups (id) on delete cascade,
+  class_id uuid references public.classes (id) on delete set null,
+  title text not null check (char_length(trim(title)) between 1 and 120),
+  task_type public.task_type not null,
+  custom_label text check (char_length(custom_label) <= 40),
+  custom_tier public.weight_tier,
+  weight_pct numeric(5, 2) check (weight_pct > 0 and weight_pct <= 100),
+  notes text check (char_length(notes) <= 1000),
+  rule jsonb not null check (rule ->> 'freq' in ('daily', 'weekdays', 'weekly')),
+  first_due timestamptz not null,
+  generated_until timestamptz not null,
+  created_at timestamptz not null default now(),
+  check (group_id is null or class_id is null)
+);
+
 create table public.tasks (
   id uuid primary key default gen_random_uuid(),
   created_by uuid not null default auth.uid() references auth.users (id) on delete cascade,
@@ -68,7 +89,7 @@ create table public.tasks (
   weight_pct numeric(5, 2) check (weight_pct > 0 and weight_pct <= 100),
   due_at timestamptz not null check (due_at > '2000-01-01'),
   notes text check (char_length(notes) <= 1000),
-  series_id uuid,
+  series_id uuid references public.task_series (id) on delete set null,
   recurrence jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -95,7 +116,7 @@ create table public.activity (
   actor_id uuid references auth.users (id) on delete set null,
   kind text not null check (kind in (
     'task_added', 'task_edited', 'due_changed', 'type_changed', 'task_deleted',
-    'member_joined', 'member_left', 'member_removed'
+    'series_stopped', 'member_joined', 'member_left', 'member_removed'
   )),
   task_id uuid,
   task_title text,
@@ -114,6 +135,15 @@ create table public.task_rescues (
   created_at timestamptz not null default now()
 );
 
+-- Failed join-code attempts, for rate limiting guesses (no client access).
+create table public.join_attempts (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users (id) on delete cascade,
+  attempted_at timestamptz not null default now()
+);
+
+create index join_attempts_user_idx on public.join_attempts (user_id, attempted_at);
+create index task_series_created_by_idx on public.task_series (created_by);
 create index tasks_created_by_idx on public.tasks (created_by);
 create index tasks_group_id_idx on public.tasks (group_id);
 create index tasks_due_at_idx on public.tasks (due_at);
@@ -147,9 +177,13 @@ stable
 security definer
 set search_path = ''
 as $$
+  -- owner_id alone is not enough: the owner must also still be a member
+  -- with the owner role (guards against a stale owner_id).
   select exists (
-    select 1 from public.groups
-    where id = gid and owner_id = (select auth.uid())
+    select 1
+    from public.groups g
+    join public.group_members m on m.group_id = g.id and m.user_id = g.owner_id
+    where g.id = gid and g.owner_id = (select auth.uid()) and m.role = 'owner'
   );
 $$;
 
@@ -308,6 +342,8 @@ as $$
   from public.group_members gm
   where gm.group_id = t.group_id
     and gm.user_id is distinct from (select auth.uid())
+    -- skip accounts that are being deleted in this same transaction
+    and exists (select 1 from auth.users u where u.id = gm.user_id)
     and t.due_at > now() - interval '7 days'
     and not exists (
       select 1 from public.task_completions c
@@ -343,6 +379,11 @@ begin
 
   if tg_op = 'DELETE' then
     if old.group_id is null then return null; end if;
+    -- stop_series logs one 'series_stopped' row instead of one per instance
+    if old.series_id is not null
+       and current_setting('pepper.stopping_series', true) = old.series_id::text then
+      return null;
+    end if;
     select name into g_name from public.groups where id = old.group_id;
     if g_name is null then return null; end if; -- whole group is going away
     insert into public.activity (group_id, actor_id, kind, task_id, task_title, payload)
@@ -423,6 +464,81 @@ create trigger groups_rescue_tasks
   before delete on public.groups
   for each row execute function public.rescue_group_tasks();
 
+-- Only a task's creator may move it into or out of a group. Otherwise any
+-- member could "delete" someone else's shared task by moving it to a group
+-- they own.
+create function public.check_task_group_move()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if new.group_id is distinct from old.group_id
+     and (select auth.uid()) is not null
+     and old.created_by <> (select auth.uid()) then
+    raise exception 'only the creator can move a task' using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger tasks_check_group_move
+  before update of group_id on public.tasks
+  for each row execute function public.check_task_group_move();
+
+-- A task can only join a series its own creator owns. Stops other members
+-- from squatting future dates of someone else's series.
+create function public.check_task_series()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if new.series_id is not null and not exists (
+    select 1 from public.task_series s
+    where s.id = new.series_id and s.created_by = new.created_by
+  ) then
+    raise exception 'series belongs to someone else' using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger tasks_check_series
+  before insert or update of series_id on public.tasks
+  for each row execute function public.check_task_series();
+
+-- Deleting an account: hand each group the user owns to its longest-standing
+-- member first, so the group survives for everyone else.
+create function public.handoff_groups_on_user_delete()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  gid uuid;
+  heir uuid;
+begin
+  for gid in select id from public.groups where owner_id = old.id for update loop
+    select user_id into heir from public.group_members
+    where group_id = gid and user_id <> old.id
+    order by joined_at
+    limit 1;
+    if heir is not null then
+      update public.groups set owner_id = heir where id = gid;
+      update public.group_members set role = 'owner' where group_id = gid and user_id = heir;
+    end if;
+  end loop;
+  return old;
+end;
+$$;
+
+create trigger before_user_delete_handoff
+  before delete on auth.users
+  for each row execute function public.handoff_groups_on_user_delete();
+
 -- ---------------------------------------------------------------------------
 -- RPCs (the only way to create/join/leave groups)
 -- ---------------------------------------------------------------------------
@@ -458,6 +574,7 @@ security definer
 set search_path = ''
 as $$
 declare
+  max_failed_per_day constant integer := 20;
   uid uuid := (select auth.uid());
   g public.groups;
   inserted integer;
@@ -465,9 +582,18 @@ begin
   if uid is null then
     raise exception 'not signed in' using errcode = '42501';
   end if;
-  select * into g from public.groups where join_code = upper(trim(coalesce(p_code, '')));
+  if (select count(*) from public.join_attempts
+      where user_id = uid and attempted_at > now() - interval '24 hours') >= max_failed_per_day then
+    raise exception 'Too many attempts. Try again tomorrow.' using errcode = 'P0001';
+  end if;
+  select * into g from public.groups
+  where join_code = upper(trim(coalesce(p_code, '')))
+  for update;
   if g.id is null then
-    raise exception 'No group found with that code' using errcode = 'P0002';
+    -- Unknown code: record the attempt and return NULL. (Raising here would
+    -- roll back the attempt row and make the rate limit useless.)
+    insert into public.join_attempts (user_id) values (uid);
+    return null;
   end if;
   insert into public.group_members (group_id, user_id, role, class_id)
   values (g.id, uid, 'member', p_class_id)
@@ -494,6 +620,8 @@ declare
   my_role text;
   heir uuid;
 begin
+  -- Serialize membership changes in this group (two owners leaving at once).
+  perform 1 from public.groups where id = p_group_id for update;
   select role into my_role from public.group_members
   where group_id = p_group_id and user_id = uid;
   if my_role is null then
@@ -504,7 +632,8 @@ begin
     select user_id into heir from public.group_members
     where group_id = p_group_id and user_id <> uid
     order by joined_at
-    limit 1;
+    limit 1
+    for update;
     if heir is null then
       delete from public.groups where id = p_group_id;
       return;
@@ -526,6 +655,7 @@ security definer
 set search_path = ''
 as $$
 begin
+  perform 1 from public.groups where id = p_group_id for update;
   if not public.is_group_owner(p_group_id) then
     raise exception 'only the owner can remove members' using errcode = '42501';
   end if;
@@ -534,11 +664,84 @@ begin
   end if;
   delete from public.group_members where group_id = p_group_id and user_id = p_user_id;
   if found then
+    -- New code so the removed member can't walk straight back in.
+    update public.groups set join_code = public.new_join_code() where id = p_group_id;
     insert into public.activity (group_id, actor_id, kind, payload)
     values (p_group_id, (select auth.uid()), 'member_removed',
             jsonb_build_object('user_id', p_user_id));
   end if;
 end;
+$$;
+
+-- Owner-only: replace the join code (the old one stops working).
+create function public.regenerate_join_code(p_group_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  code text;
+begin
+  perform 1 from public.groups where id = p_group_id for update;
+  if not public.is_group_owner(p_group_id) then
+    raise exception 'only the owner can change the code' using errcode = '42501';
+  end if;
+  code := public.new_join_code();
+  update public.groups set join_code = code where id = p_group_id;
+  return code;
+end;
+$$;
+
+-- Creator-only: end a recurring series after p_after. Future instances are
+-- removed in one go, with a single activity row (not one alert per instance)
+-- and no rescue offers. Instances due before now are kept as history.
+create function public.stop_series(p_series_id uuid, p_after timestamptz, p_until date)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  s public.task_series;
+  cutoff timestamptz := greatest(now(), p_after);
+  removed integer;
+begin
+  select * into s from public.task_series where id = p_series_id for update;
+  if s.id is null or s.created_by is distinct from (select auth.uid()) then
+    raise exception 'only the person who made this repeating task can stop it' using errcode = '42501';
+  end if;
+  update public.task_series
+     set rule = jsonb_set(rule, '{until}', to_jsonb(p_until::text)),
+         generated_until = cutoff
+   where id = p_series_id;
+  perform set_config('pepper.stopping_series', p_series_id::text, true);
+  delete from public.tasks
+   where series_id = p_series_id and created_by = s.created_by and due_at > cutoff;
+  get diagnostics removed = row_count;
+  perform set_config('pepper.stopping_series', '', true);
+  -- keep the display copy of the rule on the remaining instances in step
+  update public.tasks
+     set recurrence = jsonb_set(coalesce(recurrence, s.rule), '{until}', to_jsonb(p_until::text))
+   where series_id = p_series_id;
+  if s.group_id is not null and removed > 0 then
+    insert into public.activity (group_id, actor_id, kind, task_title, payload)
+    values (s.group_id, s.created_by, 'series_stopped', s.title, jsonb_build_object('removed', removed));
+  end if;
+  return removed;
+end;
+$$;
+
+-- Your own full profile. Groupmates can only read id + display_name (see the
+-- column grants below), so the app reads its own row through this function.
+create function public.get_my_profile()
+returns setof public.profiles
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select * from public.profiles where id = (select auth.uid());
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -587,6 +790,8 @@ alter table public.tasks enable row level security;
 alter table public.task_completions enable row level security;
 alter table public.activity enable row level security;
 alter table public.task_rescues enable row level security;
+alter table public.task_series enable row level security;
+alter table public.join_attempts enable row level security; -- no policies: no direct access
 
 -- profiles: you see yourself and people you share a group with
 create policy "profiles: read self and groupmates" on public.profiles
@@ -656,6 +861,27 @@ create policy "tasks: delete" on public.tasks
     or (group_id is not null and public.is_group_owner(group_id))
   );
 
+-- task_series: creator manages; group members can read shared series
+create policy "series: read" on public.task_series
+  for select to authenticated
+  using (
+    created_by = (select auth.uid())
+    or (group_id is not null and public.is_group_member(group_id))
+  );
+create policy "series: insert" on public.task_series
+  for insert to authenticated
+  with check (
+    created_by = (select auth.uid())
+    and (group_id is null or public.is_group_member(group_id))
+  );
+create policy "series: creator updates" on public.task_series
+  for update to authenticated
+  using (created_by = (select auth.uid()))
+  with check (created_by = (select auth.uid()));
+create policy "series: creator deletes" on public.task_series
+  for delete to authenticated
+  using (created_by = (select auth.uid()));
+
 -- completions: private to each student
 create policy "completions: own rows" on public.task_completions
   for all to authenticated
@@ -687,7 +913,10 @@ revoke all on all tables in schema public from anon;
 -- revoke everything and grant back only the intended entry points below.
 revoke all on all functions in schema public from anon, authenticated, public;
 
-revoke insert, update, delete on public.profiles from authenticated;
+-- Groupmates may read only id + display_name. Your own full row comes from
+-- get_my_profile() (goals and struggles stay private).
+revoke select, insert, update, delete on public.profiles from authenticated;
+grant select (id, display_name) on public.profiles to authenticated;
 grant update (display_name, education_level, grade, goals, struggles,
               quiet_hours_enabled, quiet_start, quiet_end, onboarded)
   on public.profiles to authenticated;
@@ -704,6 +933,9 @@ grant update (group_id, class_id, title, task_type, custom_label, custom_tier,
               weight_pct, due_at, notes, recurrence)
   on public.tasks to authenticated;
 
+revoke update on public.task_series from authenticated;
+grant update (rule, generated_until) on public.task_series to authenticated;
+
 revoke insert, update, delete on public.activity from authenticated;
 revoke insert, update on public.task_rescues from authenticated;
 
@@ -715,6 +947,9 @@ grant execute on function public.is_group_member(uuid) to authenticated;
 grant execute on function public.is_group_owner(uuid) to authenticated;
 grant execute on function public.shares_group_with(uuid) to authenticated;
 grant execute on function public.use_ai_quota() to authenticated;
+grant execute on function public.regenerate_join_code(uuid) to authenticated;
+grant execute on function public.stop_series(uuid, timestamptz, date) to authenticated;
+grant execute on function public.get_my_profile() to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Realtime: push changes to subscribed apps (RLS still applies)
@@ -722,7 +957,10 @@ grant execute on function public.use_ai_quota() to authenticated;
 do $$
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    alter publication supabase_realtime add table public.tasks, public.activity, public.group_members;
+    -- Only the activity feed is published. Its INSERTs are RLS-checked, and
+    -- every shared-task or membership change writes one. (DELETE events on
+    -- other tables would reach every subscriber regardless of RLS.)
+    alter publication supabase_realtime add table public.activity;
   end if;
 end;
 $$;

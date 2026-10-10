@@ -11,7 +11,7 @@ import { Banner, Button, Card, Muted, Screen, tell } from '@/components/ui';
 import { goBack } from '@/lib/nav';
 import { extractTasksFromImage, pickAssignmentImage, type ExtractedTask } from '@/lib/ai';
 import * as api from '@/lib/api';
-import { draftToInput, extractedToDraft, initialInstances } from '@/lib/drafts';
+import { draftToInput, extractedToDraft } from '@/lib/drafts';
 import { C, S } from '@/lib/theme';
 import { usePlanner } from '@/state/planner';
 
@@ -73,7 +73,7 @@ export default function NewTask() {
 
   async function save(d: TaskDraft) {
     const input = draftToInput(d);
-    await api.createTask(input, initialInstances(input));
+    await api.createTask(input);
     await refresh();
     advance();
   }
@@ -116,6 +116,7 @@ export default function NewTask() {
         initial={initial}
         flagged={flagged}
         question={current?.question}
+        timeChosen={!!current?.due_time}
         submitLabel={current ? 'Looks right, save it' : 'Save task'}
         onSubmit={save}
         secondary={

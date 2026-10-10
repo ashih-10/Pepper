@@ -53,8 +53,8 @@ src/app/                 screens (Expo Router: every file is a route)
   group/[id].tsx         invite code, shared tasks, members, activity feed
 src/lib/pepper.ts        THE PEPPER FORMULA (pure functions, fully unit-tested)
 src/lib/alert-plan.ts    which alerts fire when (cadence per pepper level, quiet hours)
-src/lib/recurrence.ts    recurring tasks
-src/state/planner.tsx    loads data, live sync, scoring, alert scheduling
+src/lib/recurrence.ts    recurring tasks (a series template, kept 3 weeks ahead)
+src/state/planner.tsx    loads data, live sync (via the group activity feed), scoring, alerts
 supabase/migrations/     database tables, triggers, RPCs, row-level security
 supabase/functions/      extract-task (Claude Haiku vision), plan-today (Claude Sonnet)
 tests/                   unit tests; tests/db = security + AI-function tests (need local Supabase)
@@ -63,9 +63,9 @@ tests/                   unit tests; tests/db = security + AI-function tests (ne
 ## Tests
 
 ```bash
-npm test                 # pepper formula, recurrence, alert planning (27 tests)
+npm test                 # pepper formula, recurrence, alert planning (36 tests)
 npx supabase start       # local Supabase in Docker
-npm run test:db          # row-level security end-to-end (16 tests)
+npm run test:db          # row-level security end-to-end (23 tests)
 npm run typecheck && npx expo lint
 ```
 

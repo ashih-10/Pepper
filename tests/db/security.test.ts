@@ -65,8 +65,8 @@ run('row-level security', () => {
     bobClassId = b.data!.id;
   });
 
-  it('creates a profile on sign-up with the display name', async () => {
-    const { data } = await alice.client.from('profiles').select('*').eq('id', alice.id).single();
+  it('creates a profile on sign-up and returns it via get_my_profile', async () => {
+    const { data } = await alice.client.rpc('get_my_profile').maybeSingle<{ display_name: string; onboarded: boolean }>();
     expect(data?.display_name).toBe('Alice');
     expect(data?.onboarded).toBe(false);
   });
@@ -105,9 +105,18 @@ run('row-level security', () => {
     expect(roster.data).toHaveLength(2);
   });
 
-  it('rejects a bad join code', async () => {
-    const { error } = await carol.client.rpc('join_group', { p_code: 'ZZZZZZ' });
-    expect(error?.message).toMatch(/No group found/);
+  it('returns nothing for a bad join code', async () => {
+    const { data, error } = await carol.client.rpc('join_group', { p_code: 'ZZZZZZ' });
+    expect(error).toBeNull();
+    expect(data?.id ?? null).toBeNull();
+  });
+
+  it("keeps groupmates' onboarding answers private", async () => {
+    await alice.client.from('profiles').update({ struggles: 'private answer', goals: 'g' }).eq('id', alice.id);
+    const peek = await bob.client.from('profiles').select('struggles').eq('id', alice.id);
+    expect(peek.error).not.toBeNull();
+    const own = await alice.client.rpc('get_my_profile').maybeSingle<{ struggles: string }>();
+    expect(own.data?.struggles).toBe('private answer');
   });
 
   it('shows groupmates names but hides strangers', async () => {
@@ -170,6 +179,14 @@ run('row-level security', () => {
     expect(internal.error).not.toBeNull();
   });
 
+  it("does not let a member move someone else's shared task to another group", async () => {
+    const solo = await bob.client.rpc('create_group', { p_name: 'Bob solo' });
+    const move = await bob.client.from('tasks').update({ group_id: solo.data.id }).eq('id', sharedTaskId);
+    expect(move.error?.message).toMatch(/only the creator/);
+    expect((await alice.client.from('tasks').select('id').eq('id', sharedTaskId)).data).toHaveLength(1);
+    await bob.client.from('groups').delete().eq('id', solo.data.id);
+  });
+
   it("does not let a member delete someone else's shared task", async () => {
     const del = await bob.client.from('tasks').delete().eq('id', sharedTaskId).select();
     expect(del.data ?? []).toEqual([]);
@@ -206,6 +223,84 @@ run('row-level security', () => {
     expect(offers.data).toHaveLength(1);
     expect(offers.data![0].reason).toBe('group_deleted');
     expect(offers.data![0].snapshot.custom_label).toBe('Lab');
+  });
+
+  it('rotates the code when a member is removed, and only the owner can rotate it', async () => {
+    const dave = await newStudent('Dave');
+    const g = await dave.client.rpc('create_group', { p_name: 'Rotate test' });
+    const oldCode = g.data.join_code;
+    await carol.client.rpc('join_group', { p_code: oldCode });
+    const notOwner = await carol.client.rpc('regenerate_join_code', { p_group_id: g.data.id });
+    expect(notOwner.error).not.toBeNull();
+    expect((await dave.client.rpc('remove_member', { p_group_id: g.data.id, p_user_id: carol.id })).error).toBeNull();
+    const rejoin = await carol.client.rpc('join_group', { p_code: oldCode });
+    expect(rejoin.data?.id ?? null).toBeNull();
+    const fresh = await dave.client.rpc('regenerate_join_code', { p_group_id: g.data.id });
+    expect(fresh.data).toMatch(/^[A-Z2-9]{6}$/);
+  });
+
+  it('rate-limits wrong join codes', async () => {
+    const eve = await newStudent('Eve');
+    for (let i = 0; i < 20; i++) await eve.client.rpc('join_group', { p_code: 'QQQQQQ' });
+    const blocked = await eve.client.rpc('join_group', { p_code: 'QQQQQQ' });
+    expect(blocked.error?.message).toMatch(/Too many attempts/);
+  });
+
+  it("only lets a series' creator add tasks to it", async () => {
+    const series = await alice.client
+      .from('task_series')
+      .insert({ title: 'Reading log', task_type: 'homework', rule: { freq: 'daily' }, first_due: inDays(1), generated_until: inDays(1) })
+      .select()
+      .single();
+    expect(series.error).toBeNull();
+    const mine = await alice.client.from('tasks').insert({ title: 'Reading log', task_type: 'homework', due_at: inDays(1), series_id: series.data!.id });
+    expect(mine.error).toBeNull();
+    const squat = await bob.client.from('tasks').insert({ title: 'x', task_type: 'homework', due_at: inDays(2), series_id: series.data!.id });
+    expect(squat.error).not.toBeNull();
+    expect((await bob.client.from('task_series').select('id').eq('id', series.data!.id)).data).toEqual([]);
+  });
+
+  it('stops a shared series with one feed entry and no copy offers', async () => {
+    const sam = await newStudent('Sam');
+    const g = await sam.client.rpc('create_group', { p_name: 'Stopper' });
+    expect((await bob.client.rpc('join_group', { p_code: g.data.join_code })).error).toBeNull();
+    const series = await sam.client
+      .from('task_series')
+      .insert({ group_id: g.data.id, title: 'Vocab', task_type: 'homework', rule: { freq: 'daily' }, first_due: inDays(1), generated_until: inDays(4) })
+      .select()
+      .single();
+    expect(series.error).toBeNull();
+    const rows = [1, 2, 3, 4].map((d) => ({
+      group_id: g.data.id, title: 'Vocab', task_type: 'homework', due_at: inDays(d), series_id: series.data!.id, recurrence: { freq: 'daily' },
+    }));
+    expect((await sam.client.from('tasks').insert(rows)).error).toBeNull();
+
+    const notMine = await bob.client.rpc('stop_series', { p_series_id: series.data!.id, p_after: inDays(1), p_until: '2099-01-01' });
+    expect(notMine.error).not.toBeNull();
+
+    const stop = await sam.client.rpc('stop_series', { p_series_id: series.data!.id, p_after: inDays(1), p_until: inDays(1).slice(0, 10) });
+    expect(stop.error).toBeNull();
+    expect(stop.data).toBe(3);
+    const left = await bob.client.from('tasks').select('recurrence').eq('series_id', series.data!.id);
+    expect(left.data).toHaveLength(1);
+    expect(left.data![0].recurrence.until).toBe(inDays(1).slice(0, 10));
+    const feed = await bob.client.from('activity').select('kind').eq('group_id', g.data.id);
+    expect(feed.data!.filter((a) => a.kind === 'series_stopped')).toHaveLength(1);
+    expect(feed.data!.filter((a) => a.kind === 'task_deleted')).toHaveLength(0);
+    const offers = await bob.client.from('task_rescues').select('id').eq('group_name', 'Stopper');
+    expect(offers.data).toEqual([]);
+  });
+
+  it('hands a group to the next member when the owner deletes their account', async () => {
+    const owner = await newStudent('Owner');
+    const g = await owner.client.rpc('create_group', { p_name: 'Handoff' });
+    await bob.client.rpc('join_group', { p_code: g.data.join_code });
+    await owner.client.from('tasks').insert({ title: 'Quiz', task_type: 'quiz', due_at: inDays(2), group_id: g.data.id });
+    const admin = createClient(URL!, SERVICE!, opts);
+    const del = await admin.auth.admin.deleteUser(owner.id);
+    expect(del.error).toBeNull();
+    const after = await bob.client.from('groups').select('owner_id').eq('id', g.data.id).single();
+    expect(after.data?.owner_id).toBe(bob.id);
   });
 
   it('gives signed-out visitors nothing', async () => {

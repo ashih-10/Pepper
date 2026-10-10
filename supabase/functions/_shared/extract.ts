@@ -19,7 +19,7 @@ export const ExtractRequest = z.object({
   today: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   weekday: z.string().max(12),
   timezone: z.string().max(64),
-  classes: z.array(z.string().max(60)).max(30),
+  classes: z.array(z.string().max(60)).max(100),
 });
 export type ExtractRequest = z.infer<typeof ExtractRequest>;
 

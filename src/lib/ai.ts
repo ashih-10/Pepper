@@ -81,7 +81,7 @@ export function extractTasksFromImage(imageBase64: string, classNames: string[],
     today: dayKey(now),
     weekday: weekdayLong(now),
     timezone: timeZoneName(),
-    classes: classNames,
+    classes: classNames.slice(0, 100),
   });
 }
 

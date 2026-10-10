@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { inQuietHours, MAX_ALERTS, planAlerts, type AlertTask } from '@/lib/alert-plan';
-import { nextOccurrences, topUp } from '@/lib/recurrence';
+import { nextOccurrences, seriesTopUp, topUp } from '@/lib/recurrence';
 
 describe('recurring tasks', () => {
   const mondayEvening = new Date('2026-10-12T20:00:00'); // Monday
@@ -93,5 +93,88 @@ describe('alert planning', () => {
     const serrano = alerts.filter((a) => a.level === 'serrano');
     const days = new Set(serrano.map((a) => a.at.toDateString()));
     expect(serrano.length).toBe(days.size);
+  });
+});
+
+describe('alert grid is stable across rebuilds', () => {
+  const quietOff = { enabled: false, start: 22, end: 7 };
+  const mk = (title: string, task_type: AlertTask['task_type'], due_at: string): AlertTask => ({
+    id: title,
+    title,
+    task_type,
+    due_at,
+    custom_tier: null,
+    weight_pct: null,
+    created_at: '2026-10-01T08:00:00',
+    completed: false,
+  });
+
+  it('rebuilding an hour later reproduces the same future alerts', () => {
+    const tasks = [mk('Test', 'test', '2026-10-15T08:00:00'), mk('Quiz', 'quiz', '2026-10-14T08:00:00')];
+    const a = planAlerts(tasks, quietOff, new Date('2026-10-12T09:03:00'));
+    const b = planAlerts(tasks, quietOff, new Date('2026-10-12T10:07:00'));
+    const key = (x: { at: Date; level: string }) => `${x.at.toISOString()} ${x.level}`;
+    const overlapStart = new Date('2026-10-12T10:20:00').getTime();
+    // Compare only the stretch both plans cover (the 60-alert phone cap ends them at different times).
+    const overlapEnd = Math.min(a[a.length - 1].at.getTime(), b[b.length - 1].at.getTime());
+    const inWindow = (x: { at: Date }) => x.at.getTime() >= overlapStart && x.at.getTime() <= overlapEnd;
+    expect(b.filter(inWindow).map(key)).toEqual(a.filter(inWindow).map(key));
+  });
+
+  it('does not fire a habanero alert just because the plan was rebuilt', () => {
+    const tasks = [mk('Test', 'test', '2026-10-15T08:00:00')]; // habanero-level, not ghost
+    const alerts = planAlerts(tasks, quietOff, new Date('2026-10-12T09:03:00'), 24);
+    expect(alerts[0].level).toBe('habanero');
+    expect(alerts[0].at.getMinutes()).toBe(0);
+    expect(alerts[0].at.getHours() % 2).toBe(0);
+    expect(alerts.filter((a) => a.level === 'habanero').every((a) => a.at.getMinutes() === 0 && a.at.getHours() % 2 === 0)).toBe(true);
+  });
+
+  it('merges a warming-up task into a hot alert instead of dropping it', () => {
+    const tasks = [mk('Essay', 'homework', '2026-10-11T23:59:00'), mk('Reading', 'homework', '2026-10-14T20:00:00')];
+    const alerts = planAlerts(tasks, quietOff, new Date('2026-10-12T15:00:00'));
+    const mentions = alerts.filter((a) => a.taskIds.includes('Reading'));
+    expect(mentions.length).toBeGreaterThan(0);
+    expect(mentions[0].body).toContain('Reading');
+  });
+});
+
+describe('seriesTopUp', () => {
+  const rule = { freq: 'daily' as const };
+  const first = new Date('2026-10-12T20:00:00');
+
+  it('never backfills dates that already passed', () => {
+    const now = new Date('2026-10-20T09:00:00');
+    const { dates } = seriesTopUp(rule, first, first, now);
+    expect(dates[0].getTime()).toBeGreaterThan(now.getTime());
+    expect(dates[0].getDate()).toBe(20);
+  });
+
+  it('resumes after the watermark and never repeats earlier dates', () => {
+    const now = new Date('2026-10-12T09:00:00');
+    const one = seriesTopUp(rule, first, first, now);
+    const two = seriesTopUp(rule, first, one.generatedUntil, new Date('2026-10-13T09:00:00'));
+    const firstBatch = new Set(one.dates.map((d) => d.getTime()));
+    expect(two.dates.every((d) => !firstBatch.has(d.getTime()))).toBe(true);
+    expect(two.generatedUntil.getTime()).toBeGreaterThanOrEqual(one.generatedUntil.getTime());
+  });
+
+  it('advances the watermark even when nothing is due', () => {
+    const now = new Date('2026-10-12T09:00:00');
+    const ended = seriesTopUp({ freq: 'daily', until: '2026-10-12' }, first, first, now);
+    expect(ended.dates).toEqual([]);
+    expect(ended.generatedUntil.getTime()).toBeGreaterThanOrEqual(first.getTime());
+  });
+
+  it('honors the until date', () => {
+    const { dates } = seriesTopUp({ freq: 'daily', until: '2026-10-15' }, first, first, new Date('2026-10-12T09:00:00'));
+    expect(dates.map((d) => d.getDate())).toEqual([13, 14, 15]);
+  });
+
+  it('keeps the time of day across the daylight-saving change', () => {
+    const anchor = new Date('2026-10-28T20:00:00');
+    const { dates } = seriesTopUp({ freq: 'daily' }, anchor, anchor, new Date('2026-10-28T21:00:00'), 10);
+    expect(dates.length).toBeGreaterThan(5);
+    expect(dates.every((d) => d.getHours() === 20 && d.getMinutes() === 0)).toBe(true);
   });
 });

@@ -4,7 +4,6 @@ import { DEFAULT_TIME, emptyDraft, type FormField, type TaskDraft } from '@/comp
 import type { ExtractedTask } from './ai';
 import type { TaskInput } from './api';
 import { combine, dayKey, timeKey } from './dates';
-import { topUp } from './recurrence';
 import type { ClassRow, Recurrence, TaskRow } from './types';
 
 export function draftToInput(d: TaskDraft): TaskInput {
@@ -22,12 +21,6 @@ export function draftToInput(d: TaskDraft): TaskInput {
     group_id: d.group_id,
     recurrence,
   };
-}
-
-/** Extra instances to create right away for a new recurring task. */
-export function initialInstances(input: TaskInput): Date[] {
-  if (!input.recurrence) return [];
-  return topUp(input.recurrence, new Date(input.due_at));
 }
 
 export function rowToDraft(t: TaskRow): TaskDraft {

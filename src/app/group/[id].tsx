@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Pressable, Share, StyleSheet, Text, View } from 'react-native';
 
 import { TaskCard } from '@/components/task-card';
-import { Button, Card, Chip, ChipRow, confirm, Empty, H2, Muted, Screen, tell } from '@/components/ui';
+import { Button, Card, Chip, ChipRow, confirm, Empty, H2, Loading, Muted, Screen, tell } from '@/components/ui';
 import { goBack } from '@/lib/nav';
 import * as api from '@/lib/api';
 import { formatDue, formatRelative } from '@/lib/dates';
@@ -19,20 +19,28 @@ import { usePlanner } from '@/state/planner';
 export default function GroupDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { userId } = useAuth();
-  const { groups, members, names, tasks, classes, myMembership, refresh, now } = usePlanner();
+  const { groups, members, names, tasks, classes, myMembership, refresh, now, loading } = usePlanner();
   const [feed, setFeed] = useState<ActivityRow[]>([]);
+  const [rotating, setRotating] = useState(false);
   const group = groups.find((g) => g.id === id);
   const mine = myMembership(id);
   const isOwner = group?.owner_id === userId;
   const roster = members.filter((m) => m.group_id === id);
   const shared = tasks.filter((t) => t.group_id === id);
-  const latestTaskChange = shared.map((t) => t.updated_at).sort().at(-1) ?? '';
+  // Re-fetch the feed whenever the shared tasks or the roster change in any way
+  // (an edit, a delete, a join), not just when the newest edit changes.
+  const feedKey = [
+    ...shared.map((t) => `${t.id}@${t.updated_at}`).sort(),
+    ...roster.map((m) => m.user_id).sort(),
+    group?.join_code ?? '',
+  ].join('|');
 
   const loadFeed = useCallback(() => {
     api.loadActivity(id).then(setFeed).catch(() => {});
   }, [id]);
-  useEffect(loadFeed, [loadFeed, latestTaskChange, roster.length]);
+  useEffect(loadFeed, [loadFeed, feedKey]);
 
+  if (loading) return <Loading />;
   if (!group) {
     return (
       <Screen edges={['bottom']}>
@@ -45,6 +53,34 @@ export default function GroupDetail() {
   const open = shared.filter((t) => t.score.state === 'active' || t.score.state === 'overdue');
   const closed = shared.filter((t) => !open.includes(t));
   const invite = `Join my group "${group.name}" on Pepper Planner. Code: ${group.join_code}`;
+
+  async function share() {
+    try {
+      await Share.share({ message: invite });
+    } catch {
+      // Browsers without the share sheet (desktop Firefox, Linux Chrome): copy instead.
+      await Clipboard.setStringAsync(invite).catch(() => {});
+      tell('Invite copied', invite);
+    }
+  }
+
+  async function newCode() {
+    const ok = await confirm(
+      'Make a new code?',
+      'The old code stops working. Members already in the group stay in it.',
+      'New code',
+    );
+    if (!ok) return;
+    setRotating(true);
+    try {
+      await api.regenerateJoinCode(id);
+      await refresh();
+    } catch (e) {
+      tell('Could not change the code', errorMessage(e));
+    } finally {
+      setRotating(false);
+    }
+  }
 
   async function act(fn: () => Promise<unknown>, after?: () => void) {
     try {
@@ -71,7 +107,10 @@ export default function GroupDetail() {
             icon="copy-outline"
             onPress={() => Clipboard.setStringAsync(group.join_code).then(() => tell('Copied', group.join_code))}
           />
-          <Chip label="Share" icon="share-outline" onPress={() => Share.share({ message: invite }).catch(() => {})} />
+          <Chip label="Share" icon="share-outline" onPress={share} />
+          {isOwner && (
+            <Chip label={rotating ? 'Changing…' : 'New code'} icon="refresh" onPress={newCode} disabled={rotating} />
+          )}
         </ChipRow>
       </Card>
 
@@ -174,11 +213,12 @@ function FeedLine({ a, name, now }: { a: ActivityRow; name: string; now: Date })
     due_changed: p.to ? `moved ${t} to ${formatDue(new Date(p.to), now)}` : `changed the date of ${t}`,
     type_changed: `changed ${t} to ${p.to === 'custom' ? (p.label ?? 'custom') : p.to}`,
     task_deleted: `removed ${t}`,
+    series_stopped: `stopped repeating ${t}`,
     member_joined: 'joined the group',
     member_left: 'left the group',
     member_removed: 'removed a member',
   };
-  const alert = a.kind === 'due_changed' || a.kind === 'type_changed' || a.kind === 'task_deleted';
+  const alert = a.kind === 'due_changed' || a.kind === 'type_changed' || a.kind === 'task_deleted' || a.kind === 'series_stopped';
   return (
     <View style={styles.feed}>
       <Ionicons name={alert ? 'notifications' : 'ellipse'} size={alert ? 14 : 8} color={alert ? C.warn : C.faint} />

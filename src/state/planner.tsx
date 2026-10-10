@@ -4,6 +4,7 @@
  * phone's alert queue and recurring tasks topped up.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { AppState } from 'react-native';
 
 import { planAlerts } from '@/lib/alert-plan';
 import * as api from '@/lib/api';
@@ -11,10 +12,9 @@ import { formatDue } from '@/lib/dates';
 import { notifyNow, schedulePepperAlerts } from '@/lib/notifications';
 import { scorePlate, type PepperResult } from '@/lib/pepper';
 import { getPref, setPref } from '@/lib/prefs';
-import { topUp } from '@/lib/recurrence';
 import { supabase } from '@/lib/supabase';
 import { NO_CLASS_COLOR } from '@/lib/theme';
-import type { ActivityRow, ClassRow, GroupMemberRow, GroupRow, PlannerTask, RescueRow, TaskRow } from '@/lib/types';
+import type { ActivityRow, ClassRow, GroupMemberRow, GroupRow, PlannerTask, RescueRow } from '@/lib/types';
 
 import { useAuth } from './auth';
 
@@ -46,7 +46,7 @@ interface PlannerCtx {
 
 const Ctx = createContext<PlannerCtx | null>(null);
 
-const DEADLINE_KINDS = new Set(['due_changed', 'type_changed', 'task_deleted']);
+const DEADLINE_KINDS = new Set(['due_changed', 'type_changed', 'task_deleted', 'series_stopped']);
 
 const EMPTY: api.PlannerData = {
   classes: [],
@@ -61,10 +61,16 @@ const EMPTY: api.PlannerData = {
 export function PlannerProvider({ children }: { children: ReactNode }) {
   const { userId, profile } = useAuth();
   // Data is stored with the user id it belongs to (no flash of another
-  // account's tasks after switching users).
-  const [loaded, setLoaded] = useState<{ uid: string | null; data: api.PlannerData }>({ uid: null, data: EMPTY });
+  // account's tasks after switching users). `ok` is false until a load has
+  // succeeded, so a failed first load never wipes the phone's alert queue.
+  const [loaded, setLoaded] = useState<{ uid: string | null; data: api.PlannerData; ok: boolean }>({
+    uid: null,
+    data: EMPTY,
+    ok: false,
+  });
   const data = loaded.uid === userId ? loaded.data : EMPTY;
   const loading = loaded.uid !== userId;
+  const loadedOk = loaded.uid === userId && loaded.ok;
   const setData = useCallback(
     (fn: (d: api.PlannerData) => api.PlannerData) => setLoaded((cur) => ({ ...cur, data: fn(cur.data) })),
     [],
@@ -73,45 +79,103 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
   const [tick, setTick] = useState(() => Date.now());
   const [demoMode, setDemoModeState] = useState(() => getPref('pp:demo') === '1');
   const [warpHours, setWarpHours] = useState(0);
-  const toppedUp = useRef(new Set<string>());
+  // Bumped by every load and every local change: a load that started before a
+  // newer one (or before a check-off) is thrown away instead of overwriting it.
+  const seq = useRef(0);
+  const lastTopUp = useRef(0);
   const dataRef = useRef(data);
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
 
+  const load = useCallback((uid: string): Promise<void> => {
+    const my = ++seq.current;
+    return api.loadPlanner().then(
+      (fresh) => {
+        if (my !== seq.current) return;
+        setLoaded({ uid, data: fresh, ok: true });
+        setError(null);
+      },
+      (e) => {
+        if (my !== seq.current) return;
+        setLoaded((cur) => (cur.uid === uid ? cur : { uid, data: EMPTY, ok: false }));
+        setError(e instanceof Error ? e.message : 'Could not load your planner.');
+      },
+    );
+  }, []);
+
   const refresh = useCallback(async () => {
-    if (!userId) return;
+    if (userId) await load(userId);
+  }, [userId, load]);
+
+  // Recurring tasks: keep the series you created generated ~3 weeks ahead.
+  // Only the creator's device does this; throttled to once per 10 minutes.
+  const topUpSeries = useCallback(async () => {
+    if (!userId || Date.now() - lastTopUp.current < 10 * 60_000) return;
+    lastTopUp.current = Date.now();
     try {
-      const fresh = await api.loadPlanner(userId);
-      setLoaded({ uid: userId, data: fresh });
-      setError(null);
-    } catch (e) {
-      setLoaded((cur) => (cur.uid === userId ? cur : { uid: userId, data: EMPTY }));
-      setError(e instanceof Error ? e.message : 'Could not load your planner.');
+      if ((await api.topUpMySeries(userId)) > 0) await load(userId);
+    } catch {
+      lastTopUp.current = 0; // try again next time
+    }
+  }, [userId, load]);
+
+  // Deadline changes made by others while the app was closed.
+  const catchUp = useCallback(async () => {
+    if (!userId) return;
+    const key = `pp:lastActivity:${userId}`;
+    const last = Number(getPref(key) ?? '0');
+    try {
+      if (last === 0) {
+        // First run on this device: nothing is "new"; start from the newest row.
+        const newest = await api.latestActivityId();
+        if (newest) setPref(key, String(newest));
+        return;
+      }
+      const changes: ActivityRow[] = [];
+      let after = last;
+      for (let page = 0; page < 5; page++) {
+        const rows = await api.activitySince(after);
+        if (rows.length === 0) break;
+        changes.push(...rows.filter((r) => r.actor_id !== userId && DEADLINE_KINDS.has(r.kind)));
+        after = rows[rows.length - 1].id;
+        if (rows.length < 100) break;
+      }
+      // Older than 5 pages: skip ahead to the newest so it isn't replayed later.
+      if (after !== last) rememberActivity(userId, Math.max(after, await api.latestActivityId()));
+      if (changes.length === 1) notifyNow('📅 Group update', describeDeadlineChange(changes[0]));
+      else if (changes.length > 1) {
+        notifyNow(`📅 ${changes.length} deadline changes`, changes.slice(0, 8).map(describeDeadlineChange).join('\n'));
+      }
+    } catch {
+      // offline: try again next time the app comes to the front
     }
   }, [userId]);
 
   // Initial load (and reload when the signed-in account changes).
   useEffect(() => {
     if (!userId) return;
-    toppedUp.current.clear();
-    let live = true;
-    api.loadPlanner(userId).then(
-      (fresh) => {
-        if (!live) return;
-        setLoaded({ uid: userId, data: fresh });
-        setError(null);
-      },
-      (e) => {
-        if (!live) return;
-        setLoaded({ uid: userId, data: EMPTY });
-        setError(e instanceof Error ? e.message : 'Could not load your planner.');
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [userId]);
+    lastTopUp.current = 0;
+    load(userId).then(() => {
+      catchUp();
+      topUpSeries();
+    });
+  }, [userId, load, catchUp, topUpSeries]);
+
+  // Coming back to the app: reload (which also rebuilds the alert queue),
+  // catch up on group changes, and top up recurring tasks.
+  useEffect(() => {
+    if (!userId) return;
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      setTick(Date.now());
+      load(userId).then(() => {
+        catchUp();
+        topUpSeries();
+      });
+    });
+    return () => sub.remove();
+  }, [userId, load, catchUp, topUpSeries]);
 
   // Re-score every minute so peppers heat up while the app is open.
   useEffect(() => {
@@ -119,19 +183,14 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, []);
 
-  // Live sync: any change to tasks/groups the student can see triggers a reload;
-  // deadline changes made by someone else also pop a notification.
+  // Live sync through the group activity feed: every shared-task and
+  // membership change writes an activity row, and those INSERT events are
+  // RLS-checked, so only members of that group receive them.
   useEffect(() => {
     if (!userId) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const soon = () => {
-      clearTimeout(timer);
-      timer = setTimeout(refresh, 300);
-    };
     const channel = supabase
       .channel(`planner-${userId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, soon)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members' }, soon)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'activity' }, (payload) => {
         const row = payload.new as ActivityRow;
         rememberActivity(userId, row.id);
@@ -139,53 +198,15 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
           const group = dataRef.current.groups.find((g) => g.id === row.group_id);
           notifyNow(`📅 ${group?.name ?? 'Group'} update`, describeDeadlineChange(row));
         }
-        soon();
+        clearTimeout(timer);
+        timer = setTimeout(() => load(userId), 300);
       })
       .subscribe();
     return () => {
       clearTimeout(timer);
       supabase.removeChannel(channel);
     };
-  }, [userId, refresh]);
-
-  // Catch up on deadline changes that happened while the app was closed.
-  useEffect(() => {
-    if (!userId || loading) return;
-    const key = `pp:lastActivity:${userId}`;
-    const last = Number(getPref(key) ?? '0');
-    api
-      .activitySince(last)
-      .then((rows) => {
-        if (rows.length === 0) return;
-        rememberActivity(userId, rows[rows.length - 1].id);
-        if (last === 0) return; // first run on this device: nothing is "new"
-        const changes = rows.filter((r) => r.actor_id !== userId && DEADLINE_KINDS.has(r.kind));
-        if (changes.length === 1) notifyNow('📅 Group update', describeDeadlineChange(changes[0]));
-        else if (changes.length > 1) {
-          notifyNow(`📅 ${changes.length} deadline changes`, changes.map(describeDeadlineChange).join('\n'));
-        }
-      })
-      .catch(() => {});
-  }, [userId, loading]);
-
-  // Recurring tasks: keep each series generated ~3 weeks ahead.
-  useEffect(() => {
-    if (loading) return;
-    const latest = new Map<string, TaskRow>();
-    for (const t of data.tasks) {
-      if (!t.series_id || !t.recurrence) continue;
-      const cur = latest.get(t.series_id);
-      if (!cur || t.due_at > cur.due_at) latest.set(t.series_id, t);
-    }
-    const jobs: Promise<void>[] = [];
-    for (const [seriesId, row] of latest) {
-      if (toppedUp.current.has(seriesId)) continue;
-      toppedUp.current.add(seriesId);
-      const dates = topUp(row.recurrence!, new Date(row.due_at));
-      if (dates.length) jobs.push(api.addSeriesInstances(row, dates));
-    }
-    if (jobs.length) Promise.all(jobs).then(refresh).catch(() => {});
-  }, [data.tasks, loading, refresh]);
+  }, [userId, load]);
 
   const classById = useCallback((id: string | null) => data.classes.find((c) => c.id === id), [data.classes]);
   const myMembership = useCallback(
@@ -224,8 +245,10 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
   }, [planner, now]);
 
   // Rebuild the phone's alert queue whenever tasks or quiet hours change.
+  // Never from a failed load (that would wipe every alert), and not before
+  // onboarding finishes (that's when we ask for notification permission).
   useEffect(() => {
-    if (loading || !profile) return;
+    if (!loadedOk || !profile?.onboarded) return;
     const timer = setTimeout(() => {
       const alerts = planAlerts(
         planner.map((t) => ({ ...t, completed: t.completed_at !== null })),
@@ -235,7 +258,7 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
       schedulePepperAlerts(alerts).catch(() => {});
     }, 1500);
     return () => clearTimeout(timer);
-  }, [planner, profile, loading]);
+  }, [planner, profile, loadedOk]);
 
   const toggleComplete = useCallback(
     async (taskId: string) => {
@@ -247,15 +270,17 @@ export function PlannerProvider({ children }: { children: ReactNode }) {
           else completions.delete(taskId);
           return { ...d, completions };
         });
+      seq.current++; // a load already in flight must not undo this
       optimistic(!wasDone);
       try {
         await api.setCompleted(taskId, !wasDone);
+        if (userId) load(userId);
       } catch (e) {
         optimistic(wasDone);
         throw e;
       }
     },
-    [setData],
+    [setData, userId, load],
   );
 
   const setDemoMode = useCallback((on: boolean) => {
@@ -307,5 +332,6 @@ export function describeDeadlineChange(row: ActivityRow): string {
   if (row.kind === 'due_changed' && p.to) return `${title} moved to ${formatDue(new Date(p.to), new Date())}`;
   if (row.kind === 'type_changed') return `${title} is now a ${p.to === 'custom' ? (p.label ?? 'custom task') : p.to}`;
   if (row.kind === 'task_deleted') return `${title} was removed from the group`;
+  if (row.kind === 'series_stopped') return `${title} stopped repeating`;
   return title;
 }

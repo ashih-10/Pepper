@@ -31,9 +31,10 @@ export function setupNotifications(): Promise<boolean> {
           importance: Notifications.AndroidImportance.MAX,
           vibrationPattern: [0, 300, 200, 300],
         });
+        // LOW importance: shows in the shade and on the lock screen, no sound.
         await Notifications.setNotificationChannelAsync('pepper-mild', {
           name: 'Reminders (Jalapeño & Serrano)',
-          importance: Notifications.AndroidImportance.DEFAULT,
+          importance: Notifications.AndroidImportance.LOW,
         });
         await Notifications.setNotificationChannelAsync('group', {
           name: 'Group deadline changes',
@@ -49,7 +50,20 @@ export function setupNotifications(): Promise<boolean> {
   return ready;
 }
 
-export async function schedulePepperAlerts(alerts: PlannedAlert[]): Promise<number> {
+// Rebuilds run one at a time; if several are requested while one is running,
+// only the newest runs next. Two overlapping cancel-then-schedule passes would
+// otherwise leave duplicate alerts behind.
+let queue: Promise<unknown> = Promise.resolve();
+let latest = 0;
+
+export function schedulePepperAlerts(alerts: PlannedAlert[]): Promise<number> {
+  const mine = ++latest;
+  const run = queue.then(() => (mine === latest ? replaceAlerts(alerts) : 0));
+  queue = run.catch(() => 0);
+  return run;
+}
+
+async function replaceAlerts(alerts: PlannedAlert[]): Promise<number> {
   if (!(await setupNotifications())) return 0;
   await Notifications.cancelAllScheduledNotificationsAsync();
   for (const a of alerts) {

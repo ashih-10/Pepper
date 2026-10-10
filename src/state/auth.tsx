@@ -2,6 +2,7 @@ import type { Session } from '@supabase/supabase-js';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { AppState } from 'react-native';
 
 import { loadProfile } from '@/lib/api';
 import { isWeb } from '@/lib/storage';
@@ -15,6 +16,8 @@ interface AuthCtx {
   session: Session | null;
   userId: string | null;
   profile: Profile | null;
+  /** True when the profile could not be loaded (offline, server error). */
+  profileFailed: boolean;
   refreshProfile: () => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -26,10 +29,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [sessionChecked, setSessionChecked] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   // The profile is stored with the user id it belongs to, so a stale profile
-  // is never shown after switching accounts.
-  const [loaded, setLoaded] = useState<{ uid: string | null; profile: Profile | null }>({ uid: null, profile: null });
+  // is never shown after switching accounts. `failed` keeps "couldn't load"
+  // apart from "no profile yet", so a network blip never sends an onboarded
+  // student back through onboarding.
+  const [loaded, setLoaded] = useState<{ uid: string | null; profile: Profile | null; failed: boolean }>({
+    uid: null,
+    profile: null,
+    failed: false,
+  });
   const userId = session?.user.id ?? null;
   const profile = loaded.uid === userId ? loaded.profile : null;
+  const profileFailed = loaded.uid === userId && loaded.failed;
   const ready = !isConfigured || (sessionChecked && (!userId || loaded.uid === userId));
 
   useEffect(() => {
@@ -44,20 +54,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshProfile = useCallback(async () => {
     if (!userId) return;
-    const p = await loadProfile(userId);
-    setLoaded({ uid: userId, profile: p });
+    try {
+      const p = await loadProfile();
+      setLoaded({ uid: userId, profile: p, failed: false });
+    } catch {
+      setLoaded((cur) => (cur.uid === userId && cur.profile ? cur : { uid: userId, profile: null, failed: true }));
+    }
   }, [userId]);
 
   useEffect(() => {
     if (!userId) return;
     let live = true;
-    loadProfile(userId)
-      .then((p) => live && setLoaded({ uid: userId, profile: p }))
-      .catch(() => live && setLoaded({ uid: userId, profile: null }));
+    loadProfile()
+      .then((p) => live && setLoaded({ uid: userId, profile: p, failed: false }))
+      .catch(() => live && setLoaded({ uid: userId, profile: null, failed: true }));
     return () => {
       live = false;
     };
   }, [userId]);
+
+  // Coming back to the app retries a failed profile load.
+  useEffect(() => {
+    if (!profileFailed) return;
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refreshProfile();
+    });
+    return () => sub.remove();
+  }, [profileFailed, refreshProfile]);
 
   const signInWithGoogle = useCallback(async () => {
     if (isWeb) {
@@ -86,12 +109,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
-    setLoaded({ uid: null, profile: null });
+    setLoaded({ uid: null, profile: null, failed: false });
   }, []);
 
   const value = useMemo(
-    () => ({ ready, session, userId, profile, refreshProfile, signInWithGoogle, signOut }),
-    [ready, session, userId, profile, refreshProfile, signInWithGoogle, signOut],
+    () => ({ ready, session, userId, profile, profileFailed, refreshProfile, signInWithGoogle, signOut }),
+    [ready, session, userId, profile, profileFailed, refreshProfile, signInWithGoogle, signOut],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

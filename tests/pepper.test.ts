@@ -175,6 +175,12 @@ describe('helpers', () => {
     expect(list[1].due_at).toBe(at(1));
   });
 
+  it('describes an entered grade weight honestly', () => {
+    const r = levelOf(task({ task_type: 'homework', weight_pct: 15, due_at: at(3) }));
+    expect(explain(r)).toMatch(/15% of your grade/);
+    expect(explain(r)).not.toMatch(/low/);
+  });
+
   it('explains crowding in plain English', () => {
     const shared = task({ task_type: 'test', due_at: at(6) });
     const plate = [shared, task({ task_type: 'test', due_at: at(2) }), task({ task_type: 'test', due_at: at(3) })];

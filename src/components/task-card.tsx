@@ -67,12 +67,10 @@ export function TaskCard({ task, showDate = false }: { task: ScoredTask; showDat
     .join(' · ');
   const late = task.score.state === 'overdue';
 
+  // The checkbox and the "open" area are siblings, not nested: a screen reader
+  // treats a pressable card as one element and would hide a checkbox inside it.
   return (
-    <Pressable
-      onPress={() => router.push({ pathname: '/task/[id]', params: { id: task.id } })}
-      onLayout={(e) => setHeight(e.nativeEvent.layout.height)}
-      style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
-      accessibilityLabel={`${task.title}, ${meta}`}>
+    <View onLayout={(e) => setHeight(e.nativeEvent.layout.height)} style={styles.card}>
       <View style={[styles.stripe, { backgroundColor: task.color }]} />
       <Pressable
         onPress={onCheck}
@@ -83,26 +81,33 @@ export function TaskCard({ task, showDate = false }: { task: ScoredTask; showDat
         style={[styles.check, done && styles.checkDone]}>
         {done && <Ionicons name="checkmark" size={18} color="#fff" />}
       </Pressable>
-      <View style={styles.body}>
-        <Text style={[styles.title, done && styles.struck]} numberOfLines={2}>
-          {task.title}
-        </Text>
-        <Text style={[styles.meta, done && { color: C.faint }]} numberOfLines={2}>
-          {meta}
-        </Text>
-        {(task.group_name || late) && (
-          <View style={styles.tags}>
-            {task.group_name && (
-              <View style={styles.tag}>
-                <Ionicons name="people" size={12} color={C.muted} />
-                <Text style={styles.tagText}>{task.group_name}</Text>
-              </View>
-            )}
-            {late && !done && <Text style={[styles.tagText, { color: C.danger }]}>{formatRelative(due, now)}</Text>}
-          </View>
-        )}
-      </View>
-      <PepperBadge task={task} />
+      <Pressable
+        onPress={() => router.push({ pathname: '/task/[id]', params: { id: task.id } })}
+        style={({ pressed }) => [styles.open, pressed && { opacity: 0.7 }]}
+        accessibilityRole="button"
+        accessibilityLabel={`${task.title}, ${meta}${done ? ', done' : ''}`}
+        accessibilityHint="Opens the task">
+        <View style={styles.body}>
+          <Text style={[styles.title, done && styles.struck]} numberOfLines={2}>
+            {task.title}
+          </Text>
+          <Text style={[styles.meta, done && { color: C.faint }]} numberOfLines={2}>
+            {meta}
+          </Text>
+          {(task.group_name || late) && (
+            <View style={styles.tags}>
+              {task.group_name && (
+                <View style={styles.tag}>
+                  <Ionicons name="people" size={12} color={C.muted} />
+                  <Text style={styles.tagText}>{task.group_name}</Text>
+                </View>
+              )}
+              {late && !done && <Text style={[styles.tagText, { color: C.danger }]}>{formatRelative(due, now)}</Text>}
+            </View>
+          )}
+        </View>
+        <PepperBadge task={task} />
+      </Pressable>
 
       {pouring && (
         <>
@@ -114,7 +119,7 @@ export function TaskCard({ task, showDate = false }: { task: ScoredTask; showDat
           </Animated.Text>
         </>
       )}
-    </Pressable>
+    </View>
   );
 }
 
@@ -127,7 +132,6 @@ const styles = StyleSheet.create({
     borderRadius: R.lg,
     borderWidth: 1,
     borderColor: C.border,
-    paddingVertical: S.md,
     paddingRight: S.md,
     paddingLeft: S.lg + 2,
     overflow: 'hidden',
@@ -144,6 +148,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   checkDone: { backgroundColor: C.success, borderColor: C.success },
+  open: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: S.md, paddingVertical: S.md },
   body: { flex: 1, gap: 2 },
   title: { fontSize: 16, fontWeight: '700', color: C.text },
   struck: { textDecorationLine: 'line-through', color: C.faint },

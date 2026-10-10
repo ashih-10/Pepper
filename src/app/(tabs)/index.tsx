@@ -9,6 +9,7 @@ import { DayStrip } from '@/components/calendar';
 import { TaskCard } from '@/components/task-card';
 import { GamePlanCard, RescueOffers, StackedCallout, TimeWarp } from '@/components/today-widgets';
 import { Banner, Button, Empty, H2, Loading, Muted } from '@/components/ui';
+import type { GamePlan } from '@/lib/ai';
 import { formatDate, sameDay } from '@/lib/dates';
 import { PEPPERS } from '@/lib/pepper';
 import { dayView, dotsByDay, planCandidates } from '@/lib/selectors';
@@ -21,6 +22,7 @@ export default function Today() {
   const { tasks, now, loading, error, refresh, rescues } = usePlanner();
   const [picked, setPicked] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [plan, setPlan] = useState<GamePlan | null>(null);
   const day = picked ?? now;
   const isToday = sameDay(day, now);
 
@@ -82,7 +84,9 @@ export default function Today() {
           ) : (
             <>
               {isToday && view.hot.length >= 2 && <StackedCallout hot={view.hot} />}
-              {isToday && planCandidates(tasks).length > 0 && <GamePlanCard tasks={planCandidates(tasks)} />}
+              {isToday && planCandidates(tasks).length > 0 && (
+                <GamePlanCard tasks={planCandidates(tasks)} plan={plan} setPlan={setPlan} />
+              )}
 
               <H2>{isToday ? 'Due today' : `Due ${formatDate(day)}`}</H2>
               {view.due.length === 0 ? (

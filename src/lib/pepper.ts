@@ -89,6 +89,8 @@ export interface PepperResult {
   heat: number;
   weight: number;
   tier: WeightTier;
+  /** The student's grade-weight % when they entered one (it overrides the tier). */
+  weightPct: number | null;
   daysLeft: number;
   crowdingDays: number;
   effectiveDaysLeft: number;
@@ -178,7 +180,8 @@ export function scorePlate(tasks: PepperTask[], now: Date | number = Date.now())
     const weight = weightOf(t);
     const dueMs = toMs(t.due_at);
     const daysLeft = (dueMs - nowMs) / DAY_MS;
-    const base = { id: t.id, state, tier, weight, daysLeft };
+    const weightPct = t.weight_pct != null && t.weight_pct > 0 ? t.weight_pct : null;
+    const base = { id: t.id, state, tier, weight, weightPct, daysLeft };
 
     if (state === 'done' || state === 'passed') {
       out.set(t.id, { ...base, level: null, heat: 0, crowdingDays: 0, effectiveDaysLeft: daysLeft, neglect: 0 });
@@ -254,9 +257,12 @@ export function explain(r: PepperResult): string {
   if (r.state === 'done') return 'Done. Cooled down with a glass of milk.';
   if (r.state === 'passed') return 'The date passed, so there is nothing left to do. No more alerts.';
   if (r.state === 'overdue') return 'Past due, but it can still be turned in late, so it stays at max heat until you check it off.';
-  const tierWord = r.tier === 'high' ? 'high' : r.tier === 'medium' ? 'medium' : 'low';
+  const weightText =
+    r.weightPct != null
+      ? `${Number(r.weightPct)}% of your grade (${Math.round(r.weight * 100)}/100)`
+      : `${r.tier} (${Math.round(r.weight * 100)}/100)`;
   const parts = [
-    `Weight: ${tierWord} (${Math.round(r.weight * 100)}/100).`,
+    `Weight: ${weightText}.`,
     `Due in ${formatDays(r.daysLeft)}.`,
   ];
   if (r.crowdingDays >= 0.1) {

@@ -28,6 +28,24 @@ export interface TaskRow {
   updated_at: string;
 }
 
+/** A row from `task_series`: the template and rule of a recurring task. */
+export interface TaskSeriesRow {
+  id: string;
+  created_by: string;
+  group_id: string | null;
+  class_id: string | null;
+  title: string;
+  task_type: TaskType;
+  custom_label: string | null;
+  custom_tier: WeightTier | null;
+  weight_pct: number | null;
+  notes: string | null;
+  rule: Recurrence;
+  first_due: string;
+  generated_until: string;
+  created_at: string;
+}
+
 export interface ClassRow {
   id: string;
   user_id: string;
@@ -71,6 +89,7 @@ export type ActivityKind =
   | 'due_changed'
   | 'type_changed'
   | 'task_deleted'
+  | 'series_stopped'
   | 'member_joined'
   | 'member_left'
   | 'member_removed';

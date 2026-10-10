@@ -1,14 +1,15 @@
-/** Task details: pepper level and why, check-off, edit, delete. */
+/** Task details: pepper level and why, check-off, edit, delete, stop repeating. */
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { HeatBar, PepperBadge, typeLabel } from '@/components/pepper';
 import { TaskForm } from '@/components/task-form';
-import { Banner, Button, Card, confirm, Empty, Muted, Screen, tell } from '@/components/ui';
+import { Banner, Button, Card, confirm, Empty, Loading, Muted, Screen, tell } from '@/components/ui';
 import { goBack } from '@/lib/nav';
 import * as api from '@/lib/api';
 import { formatDue, formatRelative } from '@/lib/dates';
+import { errorMessage } from '@/lib/supabase';
 import { draftToInput, rowToDraft } from '@/lib/drafts';
 import { explain } from '@/lib/pepper';
 import { describeRecurrence } from '@/lib/recurrence';
@@ -19,11 +20,12 @@ import { usePlanner } from '@/state/planner';
 export default function TaskDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { userId } = useAuth();
-  const { taskById, toggleComplete, refresh, now, groups, names } = usePlanner();
+  const { taskById, toggleComplete, refresh, now, groups, names, loading } = usePlanner();
   const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<'delete' | 'stop' | null>(null);
   const task = taskById(id);
 
+  if (loading) return <Loading />;
   if (!task) {
     return (
       <Screen edges={['bottom']}>
@@ -38,6 +40,8 @@ export default function TaskDetail() {
   const group = groups.find((g) => g.id === task.group_id);
   const canDelete = task.created_by === userId || group?.owner_id === userId;
   const repeat = describeRecurrence(task.recurrence);
+  // Only the series' creator generates its instances, so only they can end it.
+  const canStop = !!task.series_id && task.created_by === userId && !!task.recurrence && !task.recurrence.until;
 
   async function remove() {
     const msg = task!.group_id
@@ -46,7 +50,7 @@ export default function TaskDetail() {
         ? 'This deletes only this one; other repeats stay.'
         : 'This cannot be undone.';
     if (!(await confirm('Delete this task?', msg, 'Delete', true))) return;
-    setBusy(true);
+    setBusy('delete');
     try {
       const ok = await api.deleteTask(task!.id);
       if (!ok) throw new Error('Only the person who added it or the group owner can delete it.');
@@ -54,7 +58,23 @@ export default function TaskDetail() {
       goBack();
     } catch (e) {
       tell('Could not delete', e instanceof Error ? e.message : undefined);
-      setBusy(false);
+      setBusy(null);
+    }
+  }
+
+  async function stopRepeating() {
+    const msg = task!.group_id
+      ? 'Later repeats are removed for everyone in the group. This one and earlier ones stay.'
+      : 'Later repeats are removed. This one and earlier ones stay.';
+    if (!(await confirm('Stop repeating?', msg, 'Stop repeating', true))) return;
+    setBusy('stop');
+    try {
+      await api.stopSeries(task!.series_id!, new Date(task!.due_at));
+      await refresh();
+    } catch (e) {
+      tell('Could not stop it', errorMessage(e));
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -113,6 +133,8 @@ export default function TaskDetail() {
             initial={rowToDraft(task)}
             allowRepeat={false}
             allowGroupChange={task.created_by === userId}
+            timeChosen
+            editingTaskId={task.id}
             submitLabel="Save changes"
             onSubmit={async (d) => {
               await api.updateTask(task.id, draftToInput(d));
@@ -133,8 +155,11 @@ export default function TaskDetail() {
         </Card>
       )}
 
+      {canStop && !editing && (
+        <Button title="Stop repeating" icon="repeat-outline" kind="ghost" onPress={stopRepeating} busy={busy === 'stop'} />
+      )}
       {canDelete && !editing && (
-        <Button title="Delete task" icon="trash-outline" kind="ghost" onPress={remove} busy={busy} />
+        <Button title="Delete task" icon="trash-outline" kind="ghost" onPress={remove} busy={busy === 'delete'} />
       )}
     </Screen>
   );

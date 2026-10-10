@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { fetchGamePlan, type GamePlan } from '@/lib/ai';
@@ -41,10 +41,20 @@ export function StackedCallout({ hot }: { hot: ScoredTask[] }) {
   );
 }
 
-/** "Today's game plan": the formula's order, explained by Claude. */
-export function GamePlanCard({ tasks }: { tasks: ScoredTask[] }) {
+/**
+ * "Today's game plan": the formula's order, explained by Claude. The plan is
+ * held by the Today screen so looking at another day doesn't throw it away.
+ */
+export function GamePlanCard({
+  tasks,
+  plan,
+  setPlan,
+}: {
+  tasks: ScoredTask[];
+  plan: GamePlan | null;
+  setPlan: (p: GamePlan) => void;
+}) {
   const { now } = usePlanner();
-  const [plan, setPlan] = useState<GamePlan | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,12 +87,15 @@ export function GamePlanCard({ tasks }: { tasks: ScoredTask[] }) {
     );
   }
   const byId = new Map(tasks.map((t) => [t.id, t]));
+  // Steps for tasks finished since the plan was made drop out; renumber the rest.
+  const steps = plan.steps.flatMap((s) => {
+    const t = byId.get(s.task_id);
+    return t ? [{ s, t }] : [];
+  });
   return (
     <Card style={{ backgroundColor: '#FFFDF7' }}>
       <Text style={styles.planHead}>✨ {plan.headline}</Text>
-      {plan.steps.map((s, i) => {
-        const t = byId.get(s.task_id);
-        if (!t) return null;
+      {steps.map(({ s, t }, i) => {
         return (
           <View key={s.task_id} style={styles.planStep}>
             <Text style={styles.calloutNum}>{i + 1}</Text>
@@ -105,8 +118,12 @@ export function GamePlanCard({ tasks }: { tasks: ScoredTask[] }) {
 export function RescueOffers({ rescues }: { rescues: RescueRow[] }) {
   const { refresh } = usePlanner();
   const [busy, setBusy] = useState<number | null>(null);
+  // A ref, not state: a fast second tap arrives before the re-render.
+  const inFlight = useRef(false);
   if (rescues.length === 0) return null;
   async function act(r: RescueRow, keep: boolean) {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(r.id);
     try {
       if (keep) await api.copyRescue(r, null);
@@ -115,6 +132,7 @@ export function RescueOffers({ rescues }: { rescues: RescueRow[] }) {
     } catch {
       tell('Could not update that. Try again.');
     } finally {
+      inFlight.current = false;
       setBusy(null);
     }
   }
@@ -127,8 +145,8 @@ export function RescueOffers({ rescues }: { rescues: RescueRow[] }) {
           icon="copy-outline"
           action={
             <ChipRow>
-              <Chip label={busy === r.id ? 'Saving…' : 'Keep a copy'} selected onPress={() => act(r, true)} />
-              <Chip label="Dismiss" onPress={() => act(r, false)} />
+              <Chip label={busy === r.id ? 'Saving…' : 'Keep a copy'} selected onPress={() => act(r, true)} disabled={busy !== null} />
+              <Chip label="Dismiss" onPress={() => act(r, false)} disabled={busy !== null} />
             </ChipRow>
           }>
           <Text style={{ color: C.text }}>

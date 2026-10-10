@@ -114,20 +114,23 @@ export function Chip({
   onPress,
   color,
   icon,
+  disabled,
 }: {
   label: string;
   selected?: boolean;
   onPress?: () => void;
   color?: string;
   icon?: IconName;
+  disabled?: boolean;
 }) {
   const accent = color ?? C.primary;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ selected }}
+      accessibilityState={{ selected, disabled }}
       onPress={onPress}
-      style={[styles.chip, selected && { backgroundColor: accent, borderColor: accent }]}>
+      disabled={disabled}
+      style={[styles.chip, selected && { backgroundColor: accent, borderColor: accent }, disabled && { opacity: 0.6 }]}>
       {color && !selected && <View style={[styles.dot, { backgroundColor: color }]} />}
       {icon && <Ionicons name={icon} size={14} color={selected ? '#fff' : C.muted} />}
       <Text style={[styles.chipText, selected && { color: '#fff' }]}>{label}</Text>

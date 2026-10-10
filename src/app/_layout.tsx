@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { LoadFailed } from '@/components/load-failed';
 import { SetupNeeded } from '@/components/setup-needed';
 import { Loading } from '@/components/ui';
 import { isConfigured } from '@/lib/supabase';
@@ -12,6 +13,10 @@ import { AuthProvider, useAuth } from '@/state/auth';
 import { PlannerProvider } from '@/state/planner';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
+
+// A screen opened directly (deep link, page refresh) gets the tabs underneath
+// it, so its back button always has somewhere to go.
+export const unstable_settings = { anchor: '(tabs)' };
 
 export default function RootLayout() {
   return (
@@ -25,13 +30,14 @@ export default function RootLayout() {
 }
 
 function Gate() {
-  const { ready, session, profile } = useAuth();
+  const { ready, session, profile, profileFailed } = useAuth();
   useEffect(() => {
     if (ready || !isConfigured) SplashScreen.hideAsync().catch(() => {});
   }, [ready]);
 
   if (!isConfigured) return <SetupNeeded />;
   if (!ready) return <Loading />;
+  if (session && profileFailed) return <LoadFailed />;
 
   const signedIn = !!session;
   const onboarded = !!profile?.onboarded;

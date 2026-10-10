@@ -59,6 +59,20 @@ run('AI edge functions', () => {
     expect(res.status).toBe(400);
   });
 
+  it('does not charge the daily AI quota for malformed requests', async () => {
+    for (let i = 0; i < 45; i++) {
+      const bad = await call('plan-today', { tasks: [] });
+      expect(bad.status).toBe(400);
+    }
+    // 45 bad requests later, a valid call still goes through (limit is 40/day)
+    const ok = await call('plan-today', {
+      now: 'Monday 4:00 PM',
+      timezone: 'UTC',
+      tasks: [{ id: 'z9', title: 'Quiz', kind: 'Quiz', class_name: null, due: 'today', pepper: 'Habanero' }],
+    });
+    expect(ok.status).toBe(200);
+  });
+
   it('extracts tasks from a photo and cleans up the result', async () => {
     const res = await call('extract-task', {
       image: PNG,
