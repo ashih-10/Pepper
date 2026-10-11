@@ -102,6 +102,11 @@ npm run typecheck && npx expo lint
 `tests/db/functions.test.ts` checks the AI functions against a fake Claude server
 (`tests/mocks/fake-claude.mjs`), so it runs without spending API credits.
 
+## License
+
+Copyright © 2026 ashih-10. **All rights reserved.** This code is shared for viewing only;
+no permission is granted to copy, modify or distribute it. See [LICENSE](LICENSE).
+
 ## AI disclosure
 
 Built with help from Claude Code (an AI coding assistant). See the "How It Works" PDF in `docs/`

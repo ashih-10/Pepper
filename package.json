@@ -55,5 +55,6 @@
     "test:db": "bash scripts/test-db.sh",
     "typecheck": "tsc --noEmit"
   },
+  "license": "UNLICENSED",
   "private": true
 }
