@@ -995,6 +995,11 @@ grant insert (task_id) on public.task_completions to authenticated;
 revoke insert on public.classes from authenticated;
 grant insert (name, color, position) on public.classes to authenticated;
 
+-- Internal counters: only SECURITY DEFINER functions touch these. RLS (no
+-- policies) already blocks students; dropping the default grants too means a
+-- future policy mistake can't expose them.
+revoke all on public.ai_usage, public.join_attempts from authenticated;
+
 revoke insert, update, delete on public.activity from authenticated;
 revoke insert, update on public.task_rescues from authenticated;
 
