@@ -95,7 +95,7 @@ tests/                   unit tests; tests/db = security + AI-function tests (ne
 ```bash
 npm test                 # pepper formula, recurrence, alerts, on-device demo backend (58 tests)
 npx supabase start       # local Supabase in Docker
-npm run test:db          # row-level security end-to-end (23 tests)
+npm run test:db          # row-level security end-to-end (27 attack tests)
 npm run typecheck && npx expo lint
 ```
 
