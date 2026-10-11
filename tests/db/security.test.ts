@@ -297,6 +297,28 @@ run('row-level security', () => {
     expect(forgedDone.error).not.toBeNull();
   });
 
+  it('re-stamps created_at when a backdated personal task is moved into a group', async () => {
+    const g = await alice.client.rpc('create_group', { p_name: 'MoveStamp' });
+    expect((await bob.client.rpc('join_group', { p_code: g.data.join_code })).error).toBeNull();
+    const t = await bob.client
+      .from('tasks')
+      .insert({ title: 'Old', task_type: 'homework', due_at: inDays(2), created_at: '2000-01-02T00:00:00Z' })
+      .select('id')
+      .single();
+    expect(t.error).toBeNull();
+    expect((await bob.client.from('tasks').update({ group_id: g.data.id }).eq('id', t.data!.id)).error).toBeNull();
+    const seen = await alice.client.from('tasks').select('created_at').eq('id', t.data!.id).single();
+    expect(new Date(seen.data!.created_at).getFullYear()).toBe(new Date().getFullYear());
+  });
+
+  it('keeps the AI quota counter server-only', async () => {
+    // Students can't bump (or inspect) the counter, so they can't burn the
+    // app-wide daily budget for everyone.
+    expect((await bob.client.rpc('use_ai_quota', { p_user: bob.id })).error).not.toBeNull();
+    expect((await bob.client.rpc('use_ai_quota', { p_user: alice.id })).error).not.toBeNull();
+    expect((await bob.client.rpc('use_ai_quota')).error).not.toBeNull();
+  });
+
   it('serializes concurrent join attempts so the daily cap holds', async () => {
     const mob = await newStudent('Mob');
     // 40 concurrent wrong guesses: without the per-user lock these race past 20.

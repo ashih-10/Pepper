@@ -505,25 +505,28 @@ begin
 end;
 $$;
 
--- Every group member reads a shared task's created_at, so it must be server-
--- stamped; a personal task may keep a client value (the demo week backdates a
--- neglected project). id and updated_at are never client-set (column grants).
-create function public.stamp_task_insert()
+-- Every group member reads a shared task's created_at, so it is server-stamped
+-- whenever a task becomes shared: created in a group, or moved into one (else a
+-- backdated personal task could be moved in to smuggle the old date). A personal
+-- task may keep a client value (the demo week backdates a neglected project).
+-- id and updated_at are never client-set (column grants).
+create function public.stamp_shared_task()
 returns trigger
 language plpgsql
 set search_path = ''
 as $$
 begin
-  if new.group_id is not null then
+  if new.group_id is not null
+     and (tg_op = 'INSERT' or new.group_id is distinct from old.group_id) then
     new.created_at := now();
   end if;
   return new;
 end;
 $$;
 
-create trigger tasks_stamp_insert
-  before insert on public.tasks
-  for each row execute function public.stamp_task_insert();
+create trigger tasks_stamp_shared
+  before insert or update of group_id on public.tasks
+  for each row execute function public.stamp_shared_task();
 
 create trigger tasks_check_series
   before insert or update of series_id on public.tasks
@@ -779,34 +782,39 @@ create table public.ai_usage (
   primary key (user_id, day)
 );
 
-create function public.use_ai_quota()
+-- Counts one AI call for p_user and says whether it may go ahead. Server-only:
+-- the AI functions call it with the service key after verifying the student's
+-- login, so a student can't bump counters directly (and can't use that to turn
+-- the app-wide cap against everyone else).
+create function public.use_ai_quota(p_user uuid)
 returns boolean
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-  ai_daily_limit constant integer := 40;        -- per student
+  ai_daily_limit constant integer := 40;          -- per student
   ai_global_daily_limit constant integer := 2000; -- whole app: a spend backstop
-  uid uuid := (select auth.uid());
   n integer;
   total integer;
 begin
-  if uid is null then
+  if p_user is null then
     return false;
   end if;
   insert into public.ai_usage (user_id, day, calls)
-  values (uid, current_date, 1)
+  values (p_user, current_date, 1)
   on conflict (user_id, day) do update set calls = public.ai_usage.calls + 1
   returning calls into n;
-  -- Open sign-up means the per-student cap alone is not a spend ceiling, so cap
-  -- the whole app's daily Claude calls too. (The Console spend limit is the
-  -- final backstop.)
-  select coalesce(sum(calls), 0) into total from public.ai_usage where day = current_date;
-  if total > ai_global_daily_limit then
+  if n > ai_daily_limit then
     return false;
   end if;
-  return n <= ai_daily_limit;
+  -- Open sign-up means the per-student cap alone is not a spend ceiling, so cap
+  -- the whole app's daily Claude calls too. Each student counts only up to
+  -- their own limit, so one account's refused calls can't fill the app-wide
+  -- budget. (The Console spend limit is the final backstop.)
+  select coalesce(sum(least(calls, ai_daily_limit)), 0) into total
+  from public.ai_usage where day = current_date;
+  return total <= ai_global_daily_limit;
 end;
 $$;
 
@@ -997,7 +1005,7 @@ grant execute on function public.remove_member(uuid, uuid) to authenticated;
 grant execute on function public.is_group_member(uuid) to authenticated;
 grant execute on function public.is_group_owner(uuid) to authenticated;
 grant execute on function public.shares_group_with(uuid) to authenticated;
-grant execute on function public.use_ai_quota() to authenticated;
+grant execute on function public.use_ai_quota(uuid) to service_role;
 grant execute on function public.regenerate_join_code(uuid) to authenticated;
 grant execute on function public.stop_series(uuid, timestamptz, date) to authenticated;
 grant execute on function public.get_my_profile() to authenticated;

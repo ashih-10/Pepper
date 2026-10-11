@@ -45,7 +45,14 @@ export function serveAi<S extends z.ZodType>(schema: S, handler: (ctx: Ctx<z.inf
       const parsed = schema.safeParse(raw);
       if (!parsed.success) throw new UserFacingError('Bad request. Try again.');
 
-      const quota = await supabase.rpc('use_ai_quota');
+      // The quota counter is server-only: count this call with the service key,
+      // for the student whose login was just verified.
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+      if (!serviceKey) throw new Error('SUPABASE_SERVICE_ROLE_KEY is not set');
+      const admin = createClient(Deno.env.get('SUPABASE_URL')!, serviceKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const quota = await admin.rpc('use_ai_quota', { p_user: data.user.id });
       if (quota.error) throw quota.error;
       if (quota.data !== true) {
         throw new UserFacingError("You've hit today's AI limit. It resets tomorrow.", 429);

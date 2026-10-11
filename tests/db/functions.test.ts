@@ -25,14 +25,17 @@ const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwA
 run('AI edge functions', () => {
   let token: string;
   let client: SupabaseClient;
+  let admin: SupabaseClient;
+  let userId: string;
 
   beforeAll(async () => {
-    const admin = createClient(URL!, SERVICE!, opts);
+    admin = createClient(URL!, SERVICE!, opts);
     const email = `fn-${Date.now()}@test.dev`;
     await admin.auth.admin.createUser({ email, password: 'pw-1234567', email_confirm: true });
     client = createClient(URL!, ANON!, opts);
     const { data } = await client.auth.signInWithPassword({ email, password: 'pw-1234567' });
     token = data.session!.access_token;
+    userId = data.user!.id;
     await client.from('profiles').update({ struggles: 'I procrastinate on essays' }).eq('id', data.user!.id);
     fs.writeFileSync(LOG!, '');
   });
@@ -142,7 +145,8 @@ run('AI edge functions', () => {
   });
 
   it("enforces the daily AI limit", async () => {
-    for (let i = 0; i < 40; i++) await client.rpc('use_ai_quota');
+    // Use up today's 40 calls the way the AI functions do (server-side).
+    for (let i = 0; i < 40; i++) await admin.rpc('use_ai_quota', { p_user: userId });
     const res = await call('plan-today', {
       now: 'x',
       timezone: 'UTC',
