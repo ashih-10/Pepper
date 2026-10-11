@@ -59,6 +59,28 @@ run('AI edge functions', () => {
     expect(res.status).toBe(400);
   });
 
+  it('caps the request body on the stream, not just the content-length header', async () => {
+    // A chunked request (ReadableStream body sends no content-length) over the
+    // 8 MB cap must be rejected 413 before the body is parsed or quota charged.
+    const chunk = 'a'.repeat(1_000_000);
+    let sent = 0;
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (sent >= 9_000_000) return controller.close();
+        controller.enqueue(new TextEncoder().encode(chunk));
+        sent += chunk.length;
+      },
+    });
+    const res = await fetch(fnUrl('extract-task'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: stream,
+      // @ts-expect-error Node fetch needs this to stream a body
+      duplex: 'half',
+    });
+    expect(res.status).toBe(413);
+  });
+
   it('does not charge the daily AI quota for malformed requests', async () => {
     for (let i = 0; i < 45; i++) {
       const bad = await call('plan-today', { tasks: [] });

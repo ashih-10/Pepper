@@ -260,6 +260,56 @@ run('row-level security', () => {
     expect((await bob.client.from('task_series').select('id').eq('id', series.data!.id)).data).toEqual([]);
   });
 
+  it('server-stamps a shared task and refuses forged id / updated_at on insert', async () => {
+    // Personal task: a backdated created_at is allowed (the demo week uses it).
+    const mine = await bob.client
+      .from('tasks')
+      .insert({ title: 'Backdated', task_type: 'homework', due_at: inDays(2), created_at: '2000-01-02T00:00:00Z' })
+      .select('created_at')
+      .single();
+    expect(mine.error).toBeNull();
+    expect(mine.data!.created_at.startsWith('2000')).toBe(true);
+
+    // Shared task: created_at is forced to now() so it can't rewrite group history.
+    const g = await alice.client.rpc('create_group', { p_name: 'StampGroup' });
+    expect((await bob.client.rpc('join_group', { p_code: g.data.join_code })).error).toBeNull();
+    const shared = await bob.client
+      .from('tasks')
+      .insert({ title: 'Shared', task_type: 'homework', due_at: inDays(2), group_id: g.data.id, created_at: '2000-01-02T00:00:00Z' })
+      .select('created_at')
+      .single();
+    expect(shared.error).toBeNull();
+    expect(new Date(shared.data!.created_at).getFullYear()).toBe(new Date().getFullYear());
+
+    // id and updated_at are not granted to clients at all.
+    const forgedId = await bob.client
+      .from('tasks')
+      .insert({ id: '11111111-2222-3333-4444-555555555555', title: 'x', task_type: 'homework', due_at: inDays(2) });
+    expect(forgedId.error).not.toBeNull();
+    const forgedUpd = await bob.client
+      .from('tasks')
+      .insert({ title: 'x', task_type: 'homework', due_at: inDays(2), updated_at: '2000-01-02T00:00:00Z' });
+    expect(forgedUpd.error).not.toBeNull();
+    // Clients cannot forge a completion time either (completed_at is not granted).
+    const forgedDone = await bob.client
+      .from('task_completions')
+      .insert({ task_id: '11111111-2222-3333-4444-555555555555', completed_at: '2000-01-02T00:00:00Z' });
+    expect(forgedDone.error).not.toBeNull();
+  });
+
+  it('serializes concurrent join attempts so the daily cap holds', async () => {
+    const mob = await newStudent('Mob');
+    // 40 concurrent wrong guesses: without the per-user lock these race past 20.
+    await Promise.all(Array.from({ length: 40 }, () => mob.client.rpc('join_group', { p_code: 'ZZZZZZ' })));
+    const admin = createClient(URL!, SERVICE!, opts);
+    const { count } = await admin
+      .from('join_attempts')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', mob.id);
+    expect(count).toBeLessThanOrEqual(20);
+    expect((await mob.client.rpc('join_group', { p_code: 'ZZZZZZ' })).error?.message).toMatch(/Too many attempts/);
+  });
+
   it('stops a shared series with one feed entry and no copy offers', async () => {
     const sam = await newStudent('Sam');
     const g = await sam.client.rpc('create_group', { p_name: 'Stopper' });

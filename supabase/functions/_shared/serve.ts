@@ -10,7 +10,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { z } from 'zod';
 
-import { corsHeaders, json, UserFacingError } from './http.ts';
+import { corsHeaders, json, readJsonLimited, UserFacingError } from './http.ts';
 
 export interface Ctx<T> {
   userId: string;
@@ -41,11 +41,7 @@ export function serveAi<S extends z.ZodType>(schema: S, handler: (ctx: Ctx<z.inf
       const { data, error } = await supabase.auth.getUser(auth.slice('Bearer '.length));
       if (error || !data.user) throw new UserFacingError('Please sign in again.', 401);
 
-      const length = Number(req.headers.get('content-length') ?? 0);
-      if (length > MAX_BODY_BYTES) throw new UserFacingError('That image is too large. Try a smaller photo.', 413);
-      const raw = await req.json().catch(() => {
-        throw new UserFacingError('Bad request.');
-      });
+      const raw = await readJsonLimited(req, MAX_BODY_BYTES);
       const parsed = schema.safeParse(raw);
       if (!parsed.success) throw new UserFacingError('Bad request. Try again.');
 

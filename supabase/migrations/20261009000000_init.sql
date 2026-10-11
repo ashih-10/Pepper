@@ -505,6 +505,26 @@ begin
 end;
 $$;
 
+-- Every group member reads a shared task's created_at, so it must be server-
+-- stamped; a personal task may keep a client value (the demo week backdates a
+-- neglected project). id and updated_at are never client-set (column grants).
+create function public.stamp_task_insert()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if new.group_id is not null then
+    new.created_at := now();
+  end if;
+  return new;
+end;
+$$;
+
+create trigger tasks_stamp_insert
+  before insert on public.tasks
+  for each row execute function public.stamp_task_insert();
+
 create trigger tasks_check_series
   before insert or update of series_id on public.tasks
   for each row execute function public.check_task_series();
@@ -582,6 +602,9 @@ begin
   if uid is null then
     raise exception 'not signed in' using errcode = '42501';
   end if;
+  -- Serialize this user's join attempts so concurrent calls can't all read a
+  -- stale count below the cap and slip past the rate limit together.
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('pepper-join:' || uid::text));
   if (select count(*) from public.join_attempts
       where user_id = uid and attempted_at > now() - interval '24 hours') >= max_failed_per_day then
     raise exception 'Too many attempts. Try again tomorrow.' using errcode = 'P0001';
@@ -763,9 +786,11 @@ security definer
 set search_path = ''
 as $$
 declare
-  ai_daily_limit constant integer := 40;
+  ai_daily_limit constant integer := 40;        -- per student
+  ai_global_daily_limit constant integer := 2000; -- whole app: a spend backstop
   uid uuid := (select auth.uid());
   n integer;
+  total integer;
 begin
   if uid is null then
     return false;
@@ -774,6 +799,13 @@ begin
   values (uid, current_date, 1)
   on conflict (user_id, day) do update set calls = public.ai_usage.calls + 1
   returning calls into n;
+  -- Open sign-up means the per-student cap alone is not a spend ceiling, so cap
+  -- the whole app's daily Claude calls too. (The Console spend limit is the
+  -- final backstop.)
+  select coalesce(sum(calls), 0) into total from public.ai_usage where day = current_date;
+  if total > ai_global_daily_limit then
+    return false;
+  end if;
   return n <= ai_daily_limit;
 end;
 $$;
@@ -935,6 +967,25 @@ grant update (group_id, class_id, title, task_type, custom_label, custom_tier,
 
 revoke update on public.task_series from authenticated;
 grant update (rule, generated_until) on public.task_series to authenticated;
+
+-- Clients may INSERT only the business columns; id, updated_at and (except on
+-- tasks, for the demo week) created_at are server-managed. created_by/user_id
+-- stay grantable because RLS pins them to auth.uid().
+revoke insert on public.tasks from authenticated;
+grant insert (created_by, group_id, class_id, title, task_type, custom_label,
+              custom_tier, weight_pct, due_at, notes, series_id, recurrence, created_at)
+  on public.tasks to authenticated;
+
+revoke insert on public.task_series from authenticated;
+grant insert (created_by, group_id, class_id, title, task_type, custom_label,
+              custom_tier, weight_pct, notes, rule, first_due, generated_until)
+  on public.task_series to authenticated;
+
+revoke insert on public.task_completions from authenticated;
+grant insert (task_id) on public.task_completions to authenticated;
+
+revoke insert on public.classes from authenticated;
+grant insert (name, color, position) on public.classes to authenticated;
 
 revoke insert, update, delete on public.activity from authenticated;
 revoke insert, update on public.task_rescues from authenticated;
